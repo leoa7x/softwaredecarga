@@ -3,6 +3,7 @@ import sys
 import tempfile
 import subprocess
 import sqlite3
+import hashlib
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -24,6 +25,11 @@ CONFIG_DEFAULTS = {
     "direccion": "",
     "telefono": "",
 }
+
+DEFAULT_USERS = [
+    ("admin", "admin123", "administrador"),
+    ("operador", "operador123", "operador"),
+]
 
 
 def app_dir():
@@ -61,6 +67,9 @@ def get_or_create(conn, table, field, value):
         return row[0]
     conn.execute(f"INSERT INTO {table} ({field}) VALUES (?)", (value,))
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+def hash_password(password, salt):
+    return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
 
 
 def init_db():
@@ -113,6 +122,17 @@ def init_db():
             CREATE TABLE IF NOT EXISTS config (
                 key TEXT PRIMARY KEY,
                 value TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                role TEXT NOT NULL
             );
             """
         )
@@ -223,6 +243,16 @@ def init_db():
             cur = conn.execute("SELECT value FROM config WHERE key = ?", (k,))
             if cur.fetchone() is None:
                 conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", (k, v))
+        # Default users
+        for username, password, role in DEFAULT_USERS:
+            cur = conn.execute("SELECT id FROM users WHERE username = ?", (username,))
+            if cur.fetchone() is None:
+                salt = os.urandom(8).hex()
+                pwd_hash = hash_password(password, salt)
+                conn.execute(
+                    "INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)",
+                    (username, pwd_hash, salt, role),
+                )
         conn.commit()
 
 
@@ -250,6 +280,20 @@ def set_config(key, value):
             (key, value),
         )
         conn.commit()
+
+def authenticate_user(username, password):
+    with connect_db() as conn:
+        cur = conn.execute(
+            "SELECT password_hash, salt, role FROM users WHERE username = ?",
+            (username,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        pwd_hash, salt, role = row
+        if hash_password(password, salt) == pwd_hash:
+            return role
+    return None
 
 
 # ---- Catalog queries ----
@@ -670,9 +714,58 @@ class SearchDialog(tk.Toplevel):
         self.destroy()
 
 
+def login_dialog():
+    root = tk.Tk()
+    root.title("Inicio de sesión")
+    root.geometry("360x220")
+    root.resizable(False, False)
+
+    frm = ttk.Frame(root, padding=12)
+    frm.pack(fill="both", expand=True)
+
+    ttk.Label(frm, text=APP_NAME, font=("Helvetica", 14, "bold")).pack(pady=(0, 8))
+
+    ttk.Label(frm, text="Usuario").pack(anchor="w")
+    user_entry = ttk.Entry(frm, width=30)
+    user_entry.pack(pady=4)
+
+    ttk.Label(frm, text="Contraseña").pack(anchor="w")
+    pass_entry = ttk.Entry(frm, width=30, show="*")
+    pass_entry.pack(pady=4)
+
+    note = "Usuarios por defecto: admin/admin123, operador/operador123"
+    ttk.Label(frm, text=note, foreground="#555").pack(pady=(6, 0))
+
+    result = {"username": None, "role": None}
+
+    def do_login():
+        username = user_entry.get().strip()
+        password = pass_entry.get().strip()
+        if not username or not password:
+            messagebox.showerror("Error", "Usuario y contraseña requeridos.")
+            return
+        role = authenticate_user(username, password)
+        if not role:
+            messagebox.showerror("Error", "Credenciales inválidas.")
+            return
+        result["username"] = username
+        result["role"] = role
+        root.destroy()
+
+    ttk.Button(frm, text="Ingresar", command=do_login).pack(pady=10)
+
+    user_entry.focus_set()
+    root.bind("<Return>", lambda _e: do_login())
+    root.mainloop()
+    if result["username"]:
+        return result
+    return None
+
+
 class App(tk.Tk):
-    def __init__(self):
+    def __init__(self, user_info=None):
         super().__init__()
+        self.user_info = user_info or {"username": "N/A", "role": "N/A"}
         self.title(APP_NAME)
         self.geometry("1020x740")
         self.resizable(False, False)
@@ -760,6 +853,13 @@ class App(tk.Tk):
         footer = tk.Frame(root, bg=COLOR_DARK, height=26)
         footer.pack(fill="x", pady=(8, 0))
         footer.pack_propagate(False)
+        tk.Label(
+            footer,
+            text=f"Usuario: {self.user_info.get('username')} | Rol: {self.user_info.get('role')}",
+            bg=COLOR_DARK,
+            fg="white",
+            font=("Helvetica", 10),
+        ).pack(side="left", padx=10, pady=4)
         tk.Label(
             footer,
             text="Desarrollado por Ing Leonardo Sanchez - 2026",
@@ -2440,5 +2540,7 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     init_db()
-    app = App()
-    app.mainloop()
+    user_info = login_dialog()
+    if user_info:
+        app = App(user_info=user_info)
+        app.mainloop()

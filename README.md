@@ -8,6 +8,13 @@ Aplicación de escritorio (Python + Tkinter + SQLite) para registrar cargas de c
 python3 camiones_gui.py
 ```
 
+## Login
+
+Usuarios por defecto:
+
+- admin / admin123 (administrador)
+- operador / operador123 (operador)
+
 ## Dependencias opcionales
 
 - Calendarios: `pip install tkcalendar`
