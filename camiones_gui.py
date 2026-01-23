@@ -27,8 +27,8 @@ CONFIG_DEFAULTS = {
 }
 
 DEFAULT_USERS = [
-    ("admin", "admin123", "administrador"),
-    ("operador", "operador123", "operador"),
+    ("admin", "admin123", "administrador", "Administrador", ""),
+    ("operador", "operador123", "operador", "Operador", ""),
 ]
 
 
@@ -132,7 +132,10 @@ def init_db():
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 salt TEXT NOT NULL,
-                role TEXT NOT NULL
+                role TEXT NOT NULL,
+                nombre TEXT,
+                cedula TEXT,
+                activo INTEGER DEFAULT 1
             );
             """
         )
@@ -244,14 +247,24 @@ def init_db():
             if cur.fetchone() is None:
                 conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", (k, v))
         # Default users
-        for username, password, role in DEFAULT_USERS:
+        # Add missing columns to users table if needed
+        user_cols = table_columns(conn, "users")
+        if "nombre" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN nombre TEXT")
+        if "cedula" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN cedula TEXT")
+        if "activo" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN activo INTEGER DEFAULT 1")
+
+        for username, password, role, nombre, cedula in DEFAULT_USERS:
             cur = conn.execute("SELECT id FROM users WHERE username = ?", (username,))
             if cur.fetchone() is None:
                 salt = os.urandom(8).hex()
                 pwd_hash = hash_password(password, salt)
                 conn.execute(
-                    "INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)",
-                    (username, pwd_hash, salt, role),
+                    "INSERT INTO users (username, password_hash, salt, role, nombre, cedula, activo) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 1)",
+                    (username, pwd_hash, salt, role, nombre, cedula or None),
                 )
         conn.commit()
 
@@ -284,16 +297,64 @@ def set_config(key, value):
 def authenticate_user(username, password):
     with connect_db() as conn:
         cur = conn.execute(
-            "SELECT password_hash, salt, role FROM users WHERE username = ?",
+            "SELECT password_hash, salt, role, COALESCE(nombre,''), COALESCE(cedula,''), activo "
+            "FROM users WHERE username = ?",
             (username,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        pwd_hash, salt, role = row
+        pwd_hash, salt, role, nombre, cedula, activo = row
+        if not activo:
+            return None
         if hash_password(password, salt) == pwd_hash:
-            return role
+            return {"username": username, "role": role, "nombre": nombre, "cedula": cedula}
     return None
+
+
+def list_users():
+    with connect_db() as conn:
+        cur = conn.execute(
+            "SELECT id, username, COALESCE(nombre,''), COALESCE(cedula,''), role, activo "
+            "FROM users ORDER BY username"
+        )
+        return cur.fetchall()
+
+
+def add_user(username, password, role, nombre, cedula):
+    salt = os.urandom(8).hex()
+    pwd_hash = hash_password(password, salt)
+    with connect_db() as conn:
+        conn.execute(
+            "INSERT INTO users (username, password_hash, salt, role, nombre, cedula, activo) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1)",
+            (username, pwd_hash, salt, role, nombre, cedula or None),
+        )
+        conn.commit()
+
+
+def update_user(uid, username, role, nombre, cedula, password=None, activo=1):
+    with connect_db() as conn:
+        if password:
+            salt = os.urandom(8).hex()
+            pwd_hash = hash_password(password, salt)
+            conn.execute(
+                "UPDATE users SET username=?, role=?, nombre=?, cedula=?, activo=?, "
+                "password_hash=?, salt=? WHERE id=?",
+                (username, role, nombre, cedula or None, activo, pwd_hash, salt, uid),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET username=?, role=?, nombre=?, cedula=?, activo=? WHERE id=?",
+                (username, role, nombre, cedula or None, activo, uid),
+            )
+        conn.commit()
+
+
+def deactivate_user(uid):
+    with connect_db() as conn:
+        conn.execute("UPDATE users SET activo=0 WHERE id=?", (uid,))
+        conn.commit()
 
 
 # ---- Catalog queries ----
@@ -736,7 +797,7 @@ def login_dialog():
     note = "Usuarios por defecto: admin/admin123, operador/operador123"
     ttk.Label(frm, text=note, foreground="#555").pack(pady=(6, 0))
 
-    result = {"username": None, "role": None}
+    result = {"username": None, "role": None, "nombre": None, "cedula": None}
 
     def do_login():
         username = user_entry.get().strip()
@@ -744,12 +805,11 @@ def login_dialog():
         if not username or not password:
             messagebox.showerror("Error", "Usuario y contraseña requeridos.")
             return
-        role = authenticate_user(username, password)
-        if not role:
+        info = authenticate_user(username, password)
+        if not info:
             messagebox.showerror("Error", "Credenciales inválidas.")
             return
-        result["username"] = username
-        result["role"] = role
+        result.update(info)
         root.destroy()
 
     ttk.Button(frm, text="Ingresar", command=do_login).pack(pady=10)
@@ -782,6 +842,7 @@ class App(tk.Tk):
             try:
                 self.nb_main.tab(self.tab_cat, state="disabled")
                 self.nb_main.tab(self.tab_cfg, state="disabled")
+                self.nb_main.tab(self.tab_users, state="disabled")
             except Exception:
                 pass
             # Disable destructive actions
@@ -793,6 +854,8 @@ class App(tk.Tk):
             ):
                 if btn:
                     btn.state(["disabled"])
+            if getattr(self, "btn_update_carga", None):
+                self.btn_update_carga.state(["disabled"])
             # Disable edit in orders, keep print/pdf
             if getattr(self, "btn_orden_edit", None):
                 self.btn_orden_edit.state(["disabled"])
@@ -860,25 +923,29 @@ class App(tk.Tk):
         self.tab_cat = ttk.Frame(self.nb_main, padding=10)
         self.tab_cfg = ttk.Frame(self.nb_main, padding=10)
         self.tab_ordenes = ttk.Frame(self.nb_main, padding=10)
+        self.tab_users = ttk.Frame(self.nb_main, padding=10)
         self.nb_main.add(self.tab_reg, text="Registro")
         self.nb_main.add(self.tab_stats, text="Estadísticas")
         self.nb_main.add(self.tab_ordenes, text="Órdenes")
         self.nb_main.add(self.tab_cat, text="Catálogos")
         self.nb_main.add(self.tab_cfg, text="Configuración")
+        self.nb_main.add(self.tab_users, text="Usuarios")
 
         self._build_registro()
         self._build_stats()
         self._build_ordenes()
         self._build_catalogos()
         self._build_config()
+        self._build_users()
         self._apply_role_permissions()
 
         footer = tk.Frame(root, bg=COLOR_DARK, height=26)
         footer.pack(fill="x", pady=(8, 0))
         footer.pack_propagate(False)
+        display_name = self.user_info.get("nombre") or self.user_info.get("username")
         tk.Label(
             footer,
-            text=f"Usuario: {self.user_info.get('username')} | Rol: {self.user_info.get('role')}",
+            text=f"Sesión iniciada por: {display_name} | Rol: {self.user_info.get('role')}",
             bg=COLOR_DARK,
             fg="white",
             font=("Helvetica", 10),
@@ -941,7 +1008,8 @@ class App(tk.Tk):
         actions = ttk.Frame(left)
         actions.grid(row=len(fields), column=0, columnspan=3, pady=(8, 0), sticky="w")
         ttk.Button(actions, text="Guardar", command=self.on_save).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Actualizar carga", command=self.on_update_carga).pack(
+        self.btn_update_carga = ttk.Button(actions, text="Actualizar carga", command=self.on_update_carga)
+        self.btn_update_carga.pack(
             side="left", padx=(0, 8)
         )
         ttk.Button(actions, text="Limpiar", command=self.on_clear).pack(side="left", padx=(0, 8))
@@ -1072,6 +1140,49 @@ class App(tk.Tk):
         self._build_cat_tipos()
         self._build_cat_ciudades()
         self._build_cat_bodegas()
+
+    def _build_users(self):
+        frm = self.tab_users
+        ttk.Label(frm, text="Usuario").grid(row=0, column=0, sticky="w")
+        self.u_username = ttk.Entry(frm, width=24)
+        self.u_username.grid(row=0, column=1, padx=6)
+
+        ttk.Label(frm, text="Nombre").grid(row=0, column=2, sticky="w")
+        self.u_nombre = ttk.Entry(frm, width=24)
+        self.u_nombre.grid(row=0, column=3, padx=6)
+
+        ttk.Label(frm, text="Cédula").grid(row=0, column=4, sticky="w")
+        self.u_cedula = ttk.Entry(frm, width=18)
+        self.u_cedula.grid(row=0, column=5, padx=6)
+
+        ttk.Label(frm, text="Rol").grid(row=1, column=0, sticky="w")
+        self.u_role = ttk.Combobox(frm, width=22, values=["administrador", "operador"])
+        self.u_role.grid(row=1, column=1, padx=6)
+
+        ttk.Label(frm, text="Contraseña").grid(row=1, column=2, sticky="w")
+        self.u_password = ttk.Entry(frm, width=24, show="*")
+        self.u_password.grid(row=1, column=3, padx=6)
+
+        self.u_active = tk.IntVar(value=1)
+        ttk.Checkbutton(frm, text="Activo", variable=self.u_active).grid(row=1, column=4, sticky="w")
+
+        ubtns = ttk.Frame(frm)
+        ubtns.grid(row=0, column=6, rowspan=2, padx=6, sticky="ns")
+        ttk.Button(ubtns, text="Crear", command=self.on_create_user).pack(fill="x", pady=2)
+        ttk.Button(ubtns, text="Actualizar", command=self.on_update_user).pack(fill="x", pady=2)
+        ttk.Button(ubtns, text="Desactivar", command=self.on_deactivate_user).pack(fill="x", pady=2)
+
+        ttk.Label(frm, text="Buscar").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.u_search = ttk.Entry(frm, width=24)
+        self.u_search.grid(row=2, column=1, padx=6, pady=(6, 0))
+        self.u_search.bind("<KeyRelease>", lambda _e: self.refresh_users())
+        ttk.Button(frm, text="Limpiar", command=self.clear_users_form).grid(
+            row=2, column=2, padx=6, pady=(6, 0)
+        )
+
+        self.u_list = tk.Listbox(frm, height=14, width=90)
+        self.u_list.grid(row=3, column=0, columnspan=7, pady=10, sticky="w")
+        self.u_list.bind("<<ListboxSelect>>", self.on_select_user)
 
     def _build_ordenes(self):
         frm = self.tab_ordenes
@@ -1361,6 +1472,7 @@ class App(tk.Tk):
         self.refresh_alertas()
         self.refresh_cargas()
         self.refresh_ordenes()
+        self.refresh_users()
         self.load_config()
 
     def _refresh_catalog_lists(self):
@@ -2080,6 +2192,100 @@ class App(tk.Tk):
         self.o_ini.delete(0, tk.END)
         self.o_fin.delete(0, tk.END)
         self.refresh_ordenes()
+
+    def refresh_users(self):
+        if not hasattr(self, "u_list"):
+            return
+        term = self.u_search.get().strip().lower()
+        items = list_users()
+        self.u_list.delete(0, tk.END)
+        self.u_ids = []
+        for uid, username, nombre, cedula, role, activo in items:
+            label = f"{username} | {nombre} | {cedula} | {role} | {'activo' if activo else 'inactivo'}"
+            if term and term not in label.lower():
+                continue
+            self.u_list.insert(tk.END, label)
+            self.u_ids.append(uid)
+
+    def on_select_user(self, _event=None):
+        idx = self.u_list.curselection()
+        if not idx:
+            return
+        i = idx[0]
+        if i >= len(self.u_ids):
+            return
+        uid = self.u_ids[i]
+        rows = list_users()
+        user = next((u for u in rows if u[0] == uid), None)
+        if not user:
+            return
+        _, username, nombre, cedula, role, activo = user
+        self.u_selected = uid
+        self.u_username.delete(0, tk.END)
+        self.u_username.insert(0, username)
+        self.u_nombre.delete(0, tk.END)
+        self.u_nombre.insert(0, nombre)
+        self.u_cedula.delete(0, tk.END)
+        self.u_cedula.insert(0, cedula)
+        self.u_role.set(role)
+        self.u_password.delete(0, tk.END)
+        self.u_active.set(1 if activo else 0)
+
+    def clear_users_form(self):
+        self.u_username.delete(0, tk.END)
+        self.u_nombre.delete(0, tk.END)
+        self.u_cedula.delete(0, tk.END)
+        self.u_role.set("")
+        self.u_password.delete(0, tk.END)
+        self.u_active.set(1)
+        self.u_selected = None
+        if hasattr(self, "u_search"):
+            self.u_search.delete(0, tk.END)
+        self.refresh_users()
+
+    def on_create_user(self):
+        try:
+            username = self.u_username.get().strip()
+            nombre = self.u_nombre.get().strip()
+            cedula = self.u_cedula.get().strip()
+            role = self.u_role.get().strip()
+            password = self.u_password.get().strip()
+            if not username or not role or not password:
+                raise ValueError("Usuario, rol y contraseña son requeridos.")
+            add_user(username, password, role, nombre, cedula)
+            self.clear_users_form()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def on_update_user(self):
+        try:
+            uid = getattr(self, "u_selected", None)
+            if not uid:
+                raise ValueError("Selecciona un usuario.")
+            username = self.u_username.get().strip()
+            nombre = self.u_nombre.get().strip()
+            cedula = self.u_cedula.get().strip()
+            role = self.u_role.get().strip()
+            password = self.u_password.get().strip() or None
+            activo = self.u_active.get()
+            if not username or not role:
+                raise ValueError("Usuario y rol son requeridos.")
+            update_user(uid, username, role, nombre, cedula, password=password, activo=activo)
+            self.clear_users_form()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def on_deactivate_user(self):
+        try:
+            uid = getattr(self, "u_selected", None)
+            if not uid:
+                raise ValueError("Selecciona un usuario.")
+            if not messagebox.askyesno("Confirmar", "¿Desactivar este usuario?"):
+                return
+            deactivate_user(uid)
+            self.clear_users_form()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     def on_edit_orden(self):
         try:

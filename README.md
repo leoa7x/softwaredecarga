@@ -15,6 +15,8 @@ Usuarios por defecto:
 - admin / admin123 (administrador)
 - operador / operador123 (operador)
 
+Los usuarios ahora incluyen: nombre y cédula.
+
 ## Dependencias opcionales
 
 - Calendarios: `pip install tkcalendar`
