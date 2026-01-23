@@ -4,6 +4,7 @@ import tempfile
 import subprocess
 import sqlite3
 import hashlib
+import importlib.util
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -1341,13 +1342,16 @@ class App(tk.Tk):
             row=7, column=1, sticky="w", padx=6, pady=8
         )
 
+        self.cfg_deps = ttk.Label(frm, text="", foreground="#a00")
+        self.cfg_deps.grid(row=8, column=0, columnspan=3, pady=(6, 0))
+
         dev = get_config("desarrollado_por")
         cel = get_config("celular")
         ttk.Label(
             frm,
             text=f"Desarrollado por {dev} | Cel: {cel}",
             foreground="#555",
-        ).grid(row=8, column=0, columnspan=3, pady=(10, 0))
+        ).grid(row=9, column=0, columnspan=3, pady=(10, 0))
 
     def _build_cat_conductores(self):
         frm = self.tab_conductores
@@ -1543,6 +1547,7 @@ class App(tk.Tk):
         self.refresh_ordenes()
         self.refresh_users()
         self.load_config()
+        self._refresh_dependency_warnings()
 
     def _refresh_catalog_lists(self):
         self.c_index = []
@@ -2183,10 +2188,14 @@ class App(tk.Tk):
                 self.o_msg.config(text="Usa un filtro o búsqueda para ver resultados.")
             return
 
-        if f_ini:
-            parse_date(f_ini)
-        if f_fin:
-            parse_date(f_fin)
+        try:
+            if f_ini:
+                parse_date(f_ini)
+            if f_fin:
+                parse_date(f_fin)
+        except Exception:
+            messagebox.showerror("Error", "Fecha inválida. Usa el calendario o formato YYYY-MM-DD.")
+            return
 
         vehiculo_id = self.map_vehiculos.get(vehiculo_label) if vehiculo_label else None
         tipo_id = self.map_tipos.get(tipo_label) if tipo_label else None
@@ -2261,6 +2270,23 @@ class App(tk.Tk):
         self.o_ini.delete(0, tk.END)
         self.o_fin.delete(0, tk.END)
         self.refresh_ordenes()
+
+    def _refresh_dependency_warnings(self):
+        if not hasattr(self, "cfg_deps"):
+            return
+        missing = []
+        if Calendar is None:
+            missing.append("tkcalendar")
+        if importlib.util.find_spec("reportlab") is None:
+            missing.append("reportlab")
+        if importlib.util.find_spec("openpyxl") is None:
+            missing.append("openpyxl")
+        if importlib.util.find_spec("qrcode") is None:
+            missing.append("qrcode[pil]")
+        if missing:
+            self.cfg_deps.config(text=f"Faltan dependencias: {', '.join(missing)}")
+        else:
+            self.cfg_deps.config(text="")
 
     def refresh_users(self):
         if not hasattr(self, "u_list"):
