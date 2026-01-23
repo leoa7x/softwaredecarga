@@ -28,6 +28,7 @@ CONFIG_DEFAULTS = {
     "telefono": "",
     "desarrollado_por": "Ing Leonardo Sanchez",
     "celular": "3102560737",
+    "nota_pie": "",
 }
 
 DEFAULT_USERS = [
@@ -788,11 +789,20 @@ class SearchDialog(tk.Toplevel):
 def login_dialog():
     root = tk.Tk()
     root.title("Inicio de sesión")
-    root.geometry("420x360")
+    root.geometry("460x520")
     root.resizable(False, False)
 
-    frm = ttk.Frame(root, padding=12)
+    frm = ttk.Frame(root, padding=14)
     frm.pack(fill="both", expand=True)
+
+    top = ttk.Frame(frm)
+    top.pack(fill="x")
+
+    mid = ttk.Frame(frm)
+    mid.pack(fill="x", pady=(8, 6))
+
+    bottom = ttk.Frame(frm)
+    bottom.pack(fill="x", side="bottom")
 
     logo_path = resource_path("camion-de-carga.png")
     if os.path.exists(logo_path):
@@ -800,22 +810,25 @@ def login_dialog():
             img = tk.PhotoImage(file=logo_path)
             img = img.subsample(2, 2)
             root._login_logo = img
-            ttk.Label(frm, image=img).pack(pady=(0, 6))
+            ttk.Label(top, image=img).pack(pady=(0, 6))
         except Exception:
             pass
 
-    ttk.Label(frm, text=APP_NAME, font=LOGIN_TITLE_FONT).pack(pady=(0, 6))
+    ttk.Label(top, text=APP_NAME, font=LOGIN_TITLE_FONT).pack(pady=(0, 10))
 
-    ttk.Label(frm, text="Usuario").pack(anchor="w")
-    user_entry = ttk.Entry(frm, width=30)
-    user_entry.pack(pady=4)
+    form = ttk.Frame(mid)
+    form.pack(fill="x", pady=(6, 10))
+    form.columnconfigure(1, weight=1)
 
-    ttk.Label(frm, text="Contraseña").pack(anchor="w")
-    pass_entry = ttk.Entry(frm, width=30, show="*")
-    pass_entry.pack(pady=4)
+    ttk.Label(form, text="Usuario").grid(row=0, column=0, sticky="w", pady=6)
+    user_entry = ttk.Entry(form, width=28)
+    user_entry.grid(row=0, column=1, sticky="ew", pady=6)
 
-    note = "Usuarios por defecto: admin/admin123, operador/operador123"
-    ttk.Label(frm, text=note, foreground="#555").pack(pady=(6, 0))
+    ttk.Label(form, text="Contraseña").grid(row=1, column=0, sticky="w", pady=6)
+    pass_entry = ttk.Entry(form, width=28, show="*")
+    pass_entry.grid(row=1, column=1, sticky="ew", pady=6)
+
+    # no mid footer text
 
     result = {"username": None, "role": None, "nombre": None, "cedula": None}
 
@@ -832,15 +845,15 @@ def login_dialog():
         result.update(info)
         root.destroy()
 
-    ttk.Button(frm, text="Ingresar", command=do_login).pack(pady=10)
+    ttk.Button(bottom, text="Ingresar", command=do_login).pack(pady=(8, 10))
 
     dev = get_config("desarrollado_por")
     cel = get_config("celular")
     ttk.Label(
-        frm,
+        bottom,
         text=f"Desarrollado por {dev} | Cel: {cel}",
         foreground="#555",
-    ).pack(pady=(8, 0))
+    ).pack(pady=(4, 0))
 
     user_entry.focus_set()
     root.bind("<Return>", lambda _e: do_login())
@@ -1307,27 +1320,31 @@ class App(tk.Tk):
         self.cfg_tel = ttk.Entry(frm, width=40)
         self.cfg_tel.grid(row=3, column=1, padx=6, pady=4, sticky="w")
 
-        ttk.Label(frm, text="Desarrollado por").grid(row=4, column=0, sticky="w")
-        self.cfg_dev = ttk.Entry(frm, width=60)
-        self.cfg_dev.grid(row=4, column=1, padx=6, pady=4, sticky="w")
-
-        ttk.Label(frm, text="Celular").grid(row=5, column=0, sticky="w")
-        self.cfg_cel = ttk.Entry(frm, width=40)
-        self.cfg_cel.grid(row=5, column=1, padx=6, pady=4, sticky="w")
-
-        ttk.Label(frm, text="Logo (PNG)").grid(row=6, column=0, sticky="w")
+        ttk.Label(frm, text="Logo (PNG)").grid(row=4, column=0, sticky="w")
         self.cfg_logo = ttk.Entry(frm, width=60)
-        self.cfg_logo.grid(row=6, column=1, padx=6, pady=4, sticky="w")
+        self.cfg_logo.grid(row=4, column=1, padx=6, pady=4, sticky="w")
         ttk.Button(frm, text="Buscar", command=self.on_browse_logo).grid(
-            row=6, column=2, padx=6, pady=4
+            row=4, column=2, padx=6, pady=4
         )
 
         self.cfg_logo_preview = ttk.Label(frm, text="Sin logo")
-        self.cfg_logo_preview.grid(row=7, column=1, sticky="w", padx=6, pady=6)
+        self.cfg_logo_preview.grid(row=5, column=1, sticky="w", padx=6, pady=6)
+
+        ttk.Label(frm, text="Nota de pie (política)").grid(row=6, column=0, sticky="w")
+        self.cfg_nota = ttk.Entry(frm, width=60)
+        self.cfg_nota.grid(row=6, column=1, padx=6, pady=4, sticky="w")
 
         ttk.Button(frm, text="Guardar configuración", command=self.on_save_config).grid(
-            row=8, column=1, sticky="w", padx=6, pady=8
+            row=7, column=1, sticky="w", padx=6, pady=8
         )
+
+        dev = get_config("desarrollado_por")
+        cel = get_config("celular")
+        ttk.Label(
+            frm,
+            text=f"Desarrollado por {dev} | Cel: {cel}",
+            foreground="#555",
+        ).grid(row=8, column=0, columnspan=3, pady=(10, 0))
 
     def _build_cat_conductores(self):
         frm = self.tab_conductores
@@ -2620,6 +2637,7 @@ class App(tk.Tk):
             nit = get_config("nit")
             direccion = get_config("direccion")
             telefono = get_config("telefono")
+            nota_pie = get_config("nota_pie")
 
             half_letter = (8.5 * 72, 5.5 * 72)
             c = canvas.Canvas(path, pagesize=half_letter)
@@ -2731,6 +2749,10 @@ class App(tk.Tk):
             c.drawString(margin, sig_y - 14, "Recibido por")
             c.drawString(width / 2 + 20, sig_y - 14, "Entregado por")
 
+            if nota_pie:
+                c.setFont("Helvetica-Oblique", 8)
+                c.drawCentredString(width / 2, 20, nota_pie)
+
             c.save()
             try:
                 os.remove(qr_path)
@@ -2751,12 +2773,10 @@ class App(tk.Tk):
         self.cfg_dir.insert(0, get_config("direccion"))
         self.cfg_tel.delete(0, tk.END)
         self.cfg_tel.insert(0, get_config("telefono"))
-        self.cfg_dev.delete(0, tk.END)
-        self.cfg_dev.insert(0, get_config("desarrollado_por"))
-        self.cfg_cel.delete(0, tk.END)
-        self.cfg_cel.insert(0, get_config("celular"))
         self.cfg_logo.delete(0, tk.END)
         self.cfg_logo.insert(0, get_config("logo_path"))
+        self.cfg_nota.delete(0, tk.END)
+        self.cfg_nota.insert(0, get_config("nota_pie"))
         self._refresh_logo_preview()
 
     def on_save_config(self):
@@ -2766,15 +2786,13 @@ class App(tk.Tk):
             nit = self.cfg_nit.get().strip()
             direccion = self.cfg_dir.get().strip()
             telefono = self.cfg_tel.get().strip()
-            dev = self.cfg_dev.get().strip()
-            cel = self.cfg_cel.get().strip()
+            nota = self.cfg_nota.get().strip()
             set_config("encabezado", header)
             set_config("logo_path", logo)
             set_config("nit", nit)
             set_config("direccion", direccion)
             set_config("telefono", telefono)
-            set_config("desarrollado_por", dev)
-            set_config("celular", cel)
+            set_config("nota_pie", nota)
             self._refresh_logo_preview()
             messagebox.showinfo("OK", "Configuración guardada.")
         except Exception as e:
