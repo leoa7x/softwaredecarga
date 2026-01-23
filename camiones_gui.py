@@ -1074,10 +1074,13 @@ class App(tk.Tk):
         self.lbl_carga_sel.grid(row=len(fields) + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         info = (
-            "Consejos:\n"
-            "- Crea conductores, vehículos, tipos, ciudades y bodegas en la pestaña Catálogos.\n"
-            "- Usa fechas en formato YYYY-MM-DD.\n"
-            "- El peso debe ser numérico."
+            "Instructivo rápido:\n"
+            "- Crea conductores, vehículos, tipos, ciudades y bodegas en Catálogos.\n"
+            "- Registra una carga y el sistema genera la orden automática.\n"
+            "- Usa los filtros en Órdenes para buscar e imprimir/PDF.\n"
+            "- Fechas: usa el botón \"Cal\".\n"
+            "- Peso: solo números.\n"
+            "Soporte: WhatsApp 3123146044 - Ing Leonardo Sanchez"
         )
         ttk.Label(right, text=info, justify="left").pack(anchor="nw")
 
