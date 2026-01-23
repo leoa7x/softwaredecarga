@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# Envs
+.venv/
+venv/
+ENV/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# OS
+.DS_Store
+
+# Local data
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
