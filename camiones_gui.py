@@ -17,6 +17,8 @@ COLOR_BG = "#e9edf5"
 COLOR_ACCENT = "#ff5a70"
 COLOR_DARK = "#3b3f4a"
 COLOR_HI = "#f4b13d"
+TITLE_FONT = ("Helvetica", 20, "bold")
+LOGIN_TITLE_FONT = ("Helvetica", 16, "bold")
 
 CONFIG_DEFAULTS = {
     "encabezado": "RECIBO DE CARGA",
@@ -24,6 +26,8 @@ CONFIG_DEFAULTS = {
     "nit": "",
     "direccion": "",
     "telefono": "",
+    "desarrollado_por": "Ing Leonardo Sanchez",
+    "celular": "3102560737",
 }
 
 DEFAULT_USERS = [
@@ -784,13 +788,23 @@ class SearchDialog(tk.Toplevel):
 def login_dialog():
     root = tk.Tk()
     root.title("Inicio de sesión")
-    root.geometry("360x220")
+    root.geometry("420x360")
     root.resizable(False, False)
 
     frm = ttk.Frame(root, padding=12)
     frm.pack(fill="both", expand=True)
 
-    ttk.Label(frm, text=APP_NAME, font=("Helvetica", 14, "bold")).pack(pady=(0, 8))
+    logo_path = resource_path("camion-de-carga.png")
+    if os.path.exists(logo_path):
+        try:
+            img = tk.PhotoImage(file=logo_path)
+            img = img.subsample(2, 2)
+            root._login_logo = img
+            ttk.Label(frm, image=img).pack(pady=(0, 6))
+        except Exception:
+            pass
+
+    ttk.Label(frm, text=APP_NAME, font=LOGIN_TITLE_FONT).pack(pady=(0, 6))
 
     ttk.Label(frm, text="Usuario").pack(anchor="w")
     user_entry = ttk.Entry(frm, width=30)
@@ -820,6 +834,14 @@ def login_dialog():
 
     ttk.Button(frm, text="Ingresar", command=do_login).pack(pady=10)
 
+    dev = get_config("desarrollado_por")
+    cel = get_config("celular")
+    ttk.Label(
+        frm,
+        text=f"Desarrollado por {dev} | Cel: {cel}",
+        foreground="#555",
+    ).pack(pady=(8, 0))
+
     user_entry.focus_set()
     root.bind("<Return>", lambda _e: do_login())
     root.mainloop()
@@ -833,7 +855,7 @@ class App(tk.Tk):
         super().__init__()
         self.user_info = user_info or {"username": "N/A", "role": "N/A"}
         self.title(APP_NAME)
-        self.geometry("1020x740")
+        self.geometry("1200x820")
         self.resizable(False, False)
         self.configure(bg=COLOR_BG)
         self._set_icon()
@@ -912,12 +934,22 @@ class App(tk.Tk):
         root = tk.Frame(self, bg=COLOR_BG)
         root.pack(fill="both", expand=True)
 
-        header = tk.Frame(root, bg=COLOR_ACCENT, height=50)
+        header = tk.Frame(root, bg=COLOR_ACCENT, height=70)
         header.pack(fill="x", pady=(0, 10))
         header.pack_propagate(False)
 
+        logo_path = resource_path("camion-de-carga.png")
+        if os.path.exists(logo_path):
+            try:
+                img = tk.PhotoImage(file=logo_path)
+                img = img.subsample(2, 2)
+                self._header_logo = img
+                tk.Label(header, image=img, bg=COLOR_ACCENT).pack(side="left", padx=10)
+            except Exception:
+                pass
+
         title = tk.Label(
-            header, text=APP_NAME, bg=COLOR_ACCENT, fg="white", font=("Helvetica", 16, "bold")
+            header, text=APP_NAME, bg=COLOR_ACCENT, fg="white", font=TITLE_FONT
         )
         title.pack(side="left", padx=12, pady=10)
 
@@ -956,9 +988,11 @@ class App(tk.Tk):
             fg="white",
             font=("Helvetica", 10),
         ).pack(side="left", padx=10, pady=4)
+        dev = get_config("desarrollado_por")
+        cel = get_config("celular")
         tk.Label(
             footer,
-            text="Desarrollado por Ing Leonardo Sanchez - 2026",
+            text=f"Desarrollado por {dev} | Cel: {cel}",
             bg=COLOR_DARK,
             fg=COLOR_HI,
             font=("Helvetica", 10, "bold"),
@@ -1075,13 +1109,13 @@ class App(tk.Tk):
         out = ttk.LabelFrame(frm, text="Detalle", padding=10)
         out.pack(fill="both", expand=True, pady=(10, 0))
 
-        self.txt = tk.Text(out, width=110, height=22)
+        self.txt = tk.Text(out, width=120, height=24)
         self.txt.pack(fill="both", expand=True)
 
         alert = ttk.LabelFrame(frm, text="Panel de alerta (según fecha de descarga)", padding=10)
         alert.pack(fill="both", expand=False, pady=(10, 0))
 
-        self.alert_list = tk.Listbox(alert, height=8, width=110)
+        self.alert_list = tk.Listbox(alert, height=9, width=120)
         self.alert_list.pack(side="left", fill="both", expand=True)
 
         btns = ttk.Frame(alert)
@@ -1104,7 +1138,7 @@ class App(tk.Tk):
         self.cargas_search.bind("<KeyRelease>", lambda _e: self.refresh_cargas())
         ttk.Button(c_top, text="Limpiar", command=self.clear_cargas_search).pack(side="left")
 
-        self.cargas_list = tk.Listbox(cargas, height=8, width=110)
+        self.cargas_list = tk.Listbox(cargas, height=9, width=120)
         self.cargas_list.pack(side="left", fill="both", expand=True)
 
         cbtns = ttk.Frame(cargas)
@@ -1187,7 +1221,7 @@ class App(tk.Tk):
             row=2, column=2, padx=6, pady=(6, 0)
         )
 
-        self.u_list = tk.Listbox(frm, height=14, width=90)
+        self.u_list = tk.Listbox(frm, height=16, width=110)
         self.u_list.grid(row=3, column=0, columnspan=7, pady=10, sticky="w")
         self.u_list.bind("<<ListboxSelect>>", self.on_select_user)
 
@@ -1235,7 +1269,7 @@ class App(tk.Tk):
         lista = ttk.LabelFrame(frm, text="Órdenes encontradas", padding=10)
         lista.pack(fill="both", expand=True, pady=(10, 0))
 
-        self.o_list = tk.Listbox(lista, height=14, width=110)
+        self.o_list = tk.Listbox(lista, height=16, width=120)
         self.o_list.pack(side="left", fill="both", expand=True)
         self.o_list.bind("<<ListboxSelect>>", self.on_select_orden)
         self.o_list.bind("<Double-1>", lambda _e: self.on_print_orden())
@@ -1252,7 +1286,7 @@ class App(tk.Tk):
         self.btn_orden_pdf = ttk.Button(obtns, text="PDF", command=self.on_pdf_orden)
         self.btn_orden_pdf.pack(side="left", padx=6)
 
-        self.o_det = tk.Text(det, width=110, height=10)
+        self.o_det = tk.Text(det, width=120, height=12)
         self.o_det.pack(fill="both", expand=True)
 
     def _build_config(self):
@@ -1273,18 +1307,26 @@ class App(tk.Tk):
         self.cfg_tel = ttk.Entry(frm, width=40)
         self.cfg_tel.grid(row=3, column=1, padx=6, pady=4, sticky="w")
 
-        ttk.Label(frm, text="Logo (PNG)").grid(row=4, column=0, sticky="w")
+        ttk.Label(frm, text="Desarrollado por").grid(row=4, column=0, sticky="w")
+        self.cfg_dev = ttk.Entry(frm, width=60)
+        self.cfg_dev.grid(row=4, column=1, padx=6, pady=4, sticky="w")
+
+        ttk.Label(frm, text="Celular").grid(row=5, column=0, sticky="w")
+        self.cfg_cel = ttk.Entry(frm, width=40)
+        self.cfg_cel.grid(row=5, column=1, padx=6, pady=4, sticky="w")
+
+        ttk.Label(frm, text="Logo (PNG)").grid(row=6, column=0, sticky="w")
         self.cfg_logo = ttk.Entry(frm, width=60)
-        self.cfg_logo.grid(row=4, column=1, padx=6, pady=4, sticky="w")
+        self.cfg_logo.grid(row=6, column=1, padx=6, pady=4, sticky="w")
         ttk.Button(frm, text="Buscar", command=self.on_browse_logo).grid(
-            row=4, column=2, padx=6, pady=4
+            row=6, column=2, padx=6, pady=4
         )
 
         self.cfg_logo_preview = ttk.Label(frm, text="Sin logo")
-        self.cfg_logo_preview.grid(row=5, column=1, sticky="w", padx=6, pady=6)
+        self.cfg_logo_preview.grid(row=7, column=1, sticky="w", padx=6, pady=6)
 
         ttk.Button(frm, text="Guardar configuración", command=self.on_save_config).grid(
-            row=6, column=1, sticky="w", padx=6, pady=8
+            row=8, column=1, sticky="w", padx=6, pady=8
         )
 
     def _build_cat_conductores(self):
@@ -2709,6 +2751,10 @@ class App(tk.Tk):
         self.cfg_dir.insert(0, get_config("direccion"))
         self.cfg_tel.delete(0, tk.END)
         self.cfg_tel.insert(0, get_config("telefono"))
+        self.cfg_dev.delete(0, tk.END)
+        self.cfg_dev.insert(0, get_config("desarrollado_por"))
+        self.cfg_cel.delete(0, tk.END)
+        self.cfg_cel.insert(0, get_config("celular"))
         self.cfg_logo.delete(0, tk.END)
         self.cfg_logo.insert(0, get_config("logo_path"))
         self._refresh_logo_preview()
@@ -2720,11 +2766,15 @@ class App(tk.Tk):
             nit = self.cfg_nit.get().strip()
             direccion = self.cfg_dir.get().strip()
             telefono = self.cfg_tel.get().strip()
+            dev = self.cfg_dev.get().strip()
+            cel = self.cfg_cel.get().strip()
             set_config("encabezado", header)
             set_config("logo_path", logo)
             set_config("nit", nit)
             set_config("direccion", direccion)
             set_config("telefono", telefono)
+            set_config("desarrollado_por", dev)
+            set_config("celular", cel)
             self._refresh_logo_preview()
             messagebox.showinfo("OK", "Configuración guardada.")
         except Exception as e:
