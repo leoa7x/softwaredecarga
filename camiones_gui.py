@@ -5,6 +5,7 @@ import subprocess
 import sqlite3
 import hashlib
 import importlib.util
+import shutil
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -316,6 +317,17 @@ def authenticate_user(username, password):
         if hash_password(password, salt) == pwd_hash:
             return {"username": username, "role": role, "nombre": nombre, "cedula": cedula}
     return None
+
+
+def backup_db():
+    if not os.path.exists(DB_PATH):
+        return None
+    backup_dir = os.path.join(app_dir(), "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(backup_dir, f"camiones_{ts}.db")
+    shutil.copy2(DB_PATH, backup_path)
+    return backup_path
 
 
 def list_users():
@@ -1342,8 +1354,13 @@ class App(tk.Tk):
             row=7, column=1, sticky="w", padx=6, pady=8
         )
 
+        db_actions = ttk.Frame(frm)
+        db_actions.grid(row=8, column=1, sticky="w", padx=6, pady=6)
+        ttk.Button(db_actions, text="Backup DB", command=self.on_backup_db).pack(side="left", padx=4)
+        ttk.Button(db_actions, text="Reset DB", command=self.on_reset_db).pack(side="left", padx=4)
+
         self.cfg_deps = ttk.Label(frm, text="", foreground="#a00")
-        self.cfg_deps.grid(row=8, column=0, columnspan=3, pady=(6, 0))
+        self.cfg_deps.grid(row=9, column=0, columnspan=3, pady=(6, 0))
 
         dev = get_config("desarrollado_por")
         cel = get_config("celular")
@@ -1351,7 +1368,7 @@ class App(tk.Tk):
             frm,
             text=f"Desarrollado por {dev} | Cel: {cel}",
             foreground="#555",
-        ).grid(row=9, column=0, columnspan=3, pady=(10, 0))
+        ).grid(row=10, column=0, columnspan=3, pady=(10, 0))
 
     def _build_cat_conductores(self):
         frm = self.tab_conductores
@@ -2824,6 +2841,32 @@ class App(tk.Tk):
             set_config("nota_pie", nota)
             self._refresh_logo_preview()
             messagebox.showinfo("OK", "Configuración guardada.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def on_backup_db(self):
+        try:
+            path = backup_db()
+            if not path:
+                messagebox.showinfo("OK", "No hay base de datos para respaldar.")
+                return
+            messagebox.showinfo("OK", f"Backup creado: {path}")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def on_reset_db(self):
+        try:
+            if not messagebox.askyesno(
+                "Confirmar",
+                "Esto borrará la base de datos actual.\nSe hará un backup antes de continuar.\n¿Deseas seguir?",
+            ):
+                return
+            path = backup_db()
+            if os.path.exists(DB_PATH):
+                os.remove(DB_PATH)
+            init_db()
+            self.refresh_all_lists()
+            messagebox.showinfo("OK", f"Base de datos reiniciada.\nBackup: {path}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 

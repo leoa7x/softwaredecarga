@@ -44,3 +44,9 @@ Mac (pyautogui):
 pip install pyautogui
 python3 e2e/run_login_flow.py
 ```
+
+## Ejecutar en Windows (sin .exe)
+
+1) Instala Python desde https://www.python.org/downloads/ (marca "Add Python to PATH").
+2) Descomprime el proyecto.
+3) Ejecuta `run_windows.bat`.

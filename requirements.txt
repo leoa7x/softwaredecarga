@@ -1,0 +1,5 @@
+pyautogui
+qrcode[pil]
+reportlab
+openpyxl
+tkcalendar
