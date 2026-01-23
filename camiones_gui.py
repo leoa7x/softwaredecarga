@@ -20,6 +20,9 @@ COLOR_HI = "#f4b13d"
 CONFIG_DEFAULTS = {
     "encabezado": "RECIBO DE CARGA",
     "logo_path": "",
+    "nit": "",
+    "direccion": "",
+    "telefono": "",
 }
 
 
@@ -1007,18 +1010,30 @@ class App(tk.Tk):
         self.cfg_header = ttk.Entry(frm, width=60)
         self.cfg_header.grid(row=0, column=1, padx=6, pady=4, sticky="w")
 
-        ttk.Label(frm, text="Logo (PNG)").grid(row=1, column=0, sticky="w")
+        ttk.Label(frm, text="NIT").grid(row=1, column=0, sticky="w")
+        self.cfg_nit = ttk.Entry(frm, width=40)
+        self.cfg_nit.grid(row=1, column=1, padx=6, pady=4, sticky="w")
+
+        ttk.Label(frm, text="Dirección").grid(row=2, column=0, sticky="w")
+        self.cfg_dir = ttk.Entry(frm, width=60)
+        self.cfg_dir.grid(row=2, column=1, padx=6, pady=4, sticky="w")
+
+        ttk.Label(frm, text="Teléfono").grid(row=3, column=0, sticky="w")
+        self.cfg_tel = ttk.Entry(frm, width=40)
+        self.cfg_tel.grid(row=3, column=1, padx=6, pady=4, sticky="w")
+
+        ttk.Label(frm, text="Logo (PNG)").grid(row=4, column=0, sticky="w")
         self.cfg_logo = ttk.Entry(frm, width=60)
-        self.cfg_logo.grid(row=1, column=1, padx=6, pady=4, sticky="w")
+        self.cfg_logo.grid(row=4, column=1, padx=6, pady=4, sticky="w")
         ttk.Button(frm, text="Buscar", command=self.on_browse_logo).grid(
-            row=1, column=2, padx=6, pady=4
+            row=4, column=2, padx=6, pady=4
         )
 
         self.cfg_logo_preview = ttk.Label(frm, text="Sin logo")
-        self.cfg_logo_preview.grid(row=2, column=1, sticky="w", padx=6, pady=6)
+        self.cfg_logo_preview.grid(row=5, column=1, sticky="w", padx=6, pady=6)
 
         ttk.Button(frm, text="Guardar configuración", command=self.on_save_config).grid(
-            row=3, column=1, sticky="w", padx=6, pady=8
+            row=6, column=1, sticky="w", padx=6, pady=8
         )
 
     def _build_cat_conductores(self):
@@ -2032,8 +2047,14 @@ class App(tk.Tk):
             f"{conductor_nombre} (CC {conductor_cedula})" if conductor_cedula else conductor_nombre
         )
         header = get_config("encabezado") or "RECIBO DE CARGA"
+        nit = get_config("nit")
+        direccion = get_config("direccion")
+        telefono = get_config("telefono")
         lines = [
             header,
+            f"NIT: {nit}" if nit else "",
+            f"Dirección: {direccion}" if direccion else "",
+            f"Teléfono: {telefono}" if telefono else "",
             f"Orden: {orden}",
             f"Fecha impresión: {fecha}",
             "",
@@ -2050,9 +2071,12 @@ class App(tk.Tk):
             f"Bodega destino: {bodega_destino or '-'}",
             "",
             "______________________________",
-            "Firma",
+            "Recibido por",
+            "",
+            "______________________________",
+            "Entregado por",
         ]
-        return "\n".join(lines)
+        return "\n".join([l for l in lines if l != ""])
 
     def on_print_carga(self, cid=None):
         try:
@@ -2072,6 +2096,7 @@ class App(tk.Tk):
 
             header = get_config("encabezado") or "RECIBO DE CARGA"
             logo_path = get_config("logo_path")
+            orden = row[1]
 
             head = ttk.Label(win, text=header, font=("Helvetica", 14, "bold"))
             head.pack(pady=(8, 0))
@@ -2083,6 +2108,22 @@ class App(tk.Tk):
                     ttk.Label(win, image=img).pack(pady=6)
                 except Exception:
                     ttk.Label(win, text=f"[Logo no compatible: {logo_path}]").pack(pady=4)
+
+            # QR preview (order only)
+            try:
+                import qrcode  # type: ignore
+                qr_img = qrcode.make(f"SISTEMA_DE_CARGAS|ORDEN:{orden}")
+                qr_path = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+                qr_img.save(qr_path)
+                qr_photo = tk.PhotoImage(file=qr_path)
+                self._qr_preview_ref = qr_photo
+                ttk.Label(win, image=qr_photo).pack(pady=4)
+                try:
+                    os.remove(qr_path)
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
             txt = tk.Text(win, width=64, height=24)
             txt.pack(padx=10, pady=10)
@@ -2137,17 +2178,14 @@ class App(tk.Tk):
                 raise ValueError("No se encontró la carga.")
             try:
                 from reportlab.lib.pagesizes import letter
+                from reportlab.lib import colors
                 from reportlab.pdfgen import canvas
             except Exception:
                 raise ValueError("Falta reportlab. Instala: pip install reportlab")
-
-            path = filedialog.asksaveasfilename(
-                title="Guardar PDF",
-                defaultextension=".pdf",
-                filetypes=[("PDF", "*.pdf")],
-            )
-            if not path:
-                return
+            try:
+                import qrcode  # type: ignore
+            except Exception:
+                raise ValueError("Falta qrcode. Instala: pip install qrcode[pil]")
 
             (
                 _id,
@@ -2164,23 +2202,63 @@ class App(tk.Tk):
                 bodega_destino,
                 peso,
             ) = row
+
+            path = filedialog.asksaveasfilename(
+                title="Guardar PDF",
+                defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf")],
+                initialfile=f"{orden}.pdf",
+            )
+            if not path:
+                return
             header = get_config("encabezado") or "RECIBO DE CARGA"
             logo_path = get_config("logo_path")
+            nit = get_config("nit")
+            direccion = get_config("direccion")
+            telefono = get_config("telefono")
 
-            c = canvas.Canvas(path, pagesize=letter)
-            width, height = letter
-            y = height - 50
+            half_letter = (8.5 * 72, 5.5 * 72)
+            c = canvas.Canvas(path, pagesize=half_letter)
+            width, height = half_letter
+            margin = 36
+            y = height - margin
 
-            c.setFont("Helvetica-Bold", 16)
-            c.drawString(50, y, header)
-            y -= 30
+            # Subtle background and header band
+            c.setFillColor(colors.whitesmoke)
+            c.rect(0, 0, width, height, stroke=0, fill=1)
+            c.setFillColor(colors.Color(0.92, 0.92, 0.92))
+            c.rect(0, height - 80, width, 80, stroke=0, fill=1)
+            c.setFillColor(colors.black)
 
+            # Header area
             if logo_path and os.path.exists(logo_path):
                 try:
-                    c.drawImage(logo_path, 50, y - 60, width=100, height=60, preserveAspectRatio=True, mask='auto')
-                    y -= 70
+                    c.drawImage(
+                        logo_path,
+                        margin,
+                        height - margin - 50,
+                        width=90,
+                        height=50,
+                        preserveAspectRatio=True,
+                        mask="auto",
+                    )
                 except Exception:
                     pass
+            c.setFont("Helvetica-Bold", 16)
+            c.drawCentredString(width / 2, height - margin - 10, header)
+
+            # Company info (top-right block)
+            c.setFont("Helvetica", 9)
+            info_x = width - margin - 220
+            info_y = height - margin - 10
+            info_lines = [
+                f"NIT: {nit}" if nit else "",
+                f"Dirección: {direccion}" if direccion else "",
+                f"Teléfono: {telefono}" if telefono else "",
+            ]
+            for line in [l for l in info_lines if l]:
+                c.drawString(info_x, info_y, line)
+                info_y -= 12
 
             c.setFont("Helvetica", 11)
             fecha = datetime.today().strftime("%Y-%m-%d %H:%M")
@@ -2188,9 +2266,39 @@ class App(tk.Tk):
                 f"{conductor_nombre} (CC {conductor_cedula})" if conductor_cedula else conductor_nombre
             )
 
+            qr_data = f"SISTEMA_DE_CARGAS|ORDEN:{orden}"
+            qr_img = qrcode.make(qr_data)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f:
+                qr_path = f.name
+                qr_img.save(qr_path)
+
+            # QR (top-right corner, below info)
+            qr_y = height - margin - 90
+            try:
+                c.drawImage(qr_path, width - margin - 90, qr_y, width=80, height=80, mask="auto")
+            except Exception:
+                pass
+
+            # Section box for content
+            box_left = margin
+            box_right = width - margin - 110
+            box_top = height - margin - 90
+            box_bottom = 95
+            c.setStrokeColor(colors.grey)
+            c.setLineWidth(0.6)
+            c.rect(box_left, box_bottom, box_right - box_left, box_top - box_bottom, stroke=1, fill=0)
+
+            c.setFillColor(colors.Color(0.85, 0.85, 0.85))
+            c.rect(box_left, box_top - 18, box_right - box_left, 18, stroke=0, fill=1)
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(box_left + 6, box_top - 14, "DETALLE DE CARGA")
+
+            y = box_top - 30
             lines = [
                 f"Orden: {orden}",
                 f"Fecha impresión: {fecha}",
+                f"Orden elaborada por sistema: {APP_NAME}",
                 "",
                 f"Placa: {placa}",
                 f"Conductor: {conductor_label}",
@@ -2203,19 +2311,27 @@ class App(tk.Tk):
                 f"Destino: {destino}",
                 f"Bodega origen: {bodega_origen or '-'}",
                 f"Bodega destino: {bodega_destino or '-'}",
-                "",
-                "______________________________",
-                "Firma",
             ]
-            for line in lines:
-                c.drawString(50, y, line)
-                y -= 16
-                if y < 60:
-                    c.showPage()
-                    y = height - 50
-                    c.setFont("Helvetica", 11)
+            c.setFont("Helvetica", 10)
+            text_x = box_left + 6
+            text_y = y
+            for line in [l for l in lines if l != ""]:
+                c.drawString(text_x, text_y, line)
+                text_y -= 13
+
+            # Signature area (bottom, two columns)
+            sig_y = 60
+            c.line(margin, sig_y, width / 2 - 20, sig_y)
+            c.line(width / 2 + 20, sig_y, width - margin, sig_y)
+            c.setFont("Helvetica", 10)
+            c.drawString(margin, sig_y - 14, "Recibido por")
+            c.drawString(width / 2 + 20, sig_y - 14, "Entregado por")
 
             c.save()
+            try:
+                os.remove(qr_path)
+            except Exception:
+                pass
             messagebox.showinfo("OK", "PDF guardado.")
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -2225,6 +2341,12 @@ class App(tk.Tk):
             return
         self.cfg_header.delete(0, tk.END)
         self.cfg_header.insert(0, get_config("encabezado"))
+        self.cfg_nit.delete(0, tk.END)
+        self.cfg_nit.insert(0, get_config("nit"))
+        self.cfg_dir.delete(0, tk.END)
+        self.cfg_dir.insert(0, get_config("direccion"))
+        self.cfg_tel.delete(0, tk.END)
+        self.cfg_tel.insert(0, get_config("telefono"))
         self.cfg_logo.delete(0, tk.END)
         self.cfg_logo.insert(0, get_config("logo_path"))
         self._refresh_logo_preview()
@@ -2233,8 +2355,14 @@ class App(tk.Tk):
         try:
             header = self.cfg_header.get().strip()
             logo = self.cfg_logo.get().strip()
+            nit = self.cfg_nit.get().strip()
+            direccion = self.cfg_dir.get().strip()
+            telefono = self.cfg_tel.get().strip()
             set_config("encabezado", header)
             set_config("logo_path", logo)
+            set_config("nit", nit)
+            set_config("direccion", direccion)
+            set_config("telefono", telefono)
             self._refresh_logo_preview()
             messagebox.showinfo("OK", "Configuración guardada.")
         except Exception as e:

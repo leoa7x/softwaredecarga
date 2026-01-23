@@ -13,6 +13,7 @@ python3 camiones_gui.py
 - Calendarios: `pip install tkcalendar`
 - Exportar PDF: `pip install reportlab`
 - Exportar Excel: `pip install openpyxl`
+- QR en PDF: `pip install qrcode[pil]`
 
 ## Archivos
 
