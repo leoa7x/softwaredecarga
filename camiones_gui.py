@@ -357,6 +357,12 @@ def deactivate_user(uid):
         conn.commit()
 
 
+def reactivate_user(uid):
+    with connect_db() as conn:
+        conn.execute("UPDATE users SET activo=1 WHERE id=?", (uid,))
+        conn.commit()
+
+
 # ---- Catalog queries ----
 
 def list_conductores():
@@ -1171,6 +1177,7 @@ class App(tk.Tk):
         ttk.Button(ubtns, text="Crear", command=self.on_create_user).pack(fill="x", pady=2)
         ttk.Button(ubtns, text="Actualizar", command=self.on_update_user).pack(fill="x", pady=2)
         ttk.Button(ubtns, text="Desactivar", command=self.on_deactivate_user).pack(fill="x", pady=2)
+        ttk.Button(ubtns, text="Reactivar", command=self.on_reactivate_user).pack(fill="x", pady=2)
 
         ttk.Label(frm, text="Buscar").grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.u_search = ttk.Entry(frm, width=24)
@@ -2283,6 +2290,18 @@ class App(tk.Tk):
             if not messagebox.askyesno("Confirmar", "¿Desactivar este usuario?"):
                 return
             deactivate_user(uid)
+            self.clear_users_form()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def on_reactivate_user(self):
+        try:
+            uid = getattr(self, "u_selected", None)
+            if not uid:
+                raise ValueError("Selecciona un usuario.")
+            if not messagebox.askyesno("Confirmar", "¿Reactivar este usuario?"):
+                return
+            reactivate_user(uid)
             self.clear_users_form()
         except Exception as e:
             messagebox.showerror("Error", str(e))
