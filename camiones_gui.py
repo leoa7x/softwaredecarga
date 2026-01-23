@@ -775,6 +775,25 @@ class App(tk.Tk):
         self.refresh_all_lists()
         self._bind_shortcuts()
 
+    def _apply_role_permissions(self):
+        role = (self.user_info.get("role") or "").lower()
+        if role == "operador":
+            # Disable admin-only tabs
+            try:
+                self.nb_main.tab(self.tab_cat, state="disabled")
+                self.nb_main.tab(self.tab_cfg, state="disabled")
+            except Exception:
+                pass
+            # Disable destructive actions
+            for btn in (
+                getattr(self, "btn_cargas_delete", None),
+                getattr(self, "btn_cargas_edit", None),
+                getattr(self, "btn_cargas_csv", None),
+                getattr(self, "btn_cargas_excel", None),
+            ):
+                if btn:
+                    btn.state(["disabled"])
+
     def open_calendar(self, entry):
         if Calendar is None:
             messagebox.showerror("Error", "Falta tkcalendar. Instala: pip install tkcalendar")
@@ -830,25 +849,26 @@ class App(tk.Tk):
         )
         title.pack(side="left", padx=12, pady=10)
 
-        nb = ttk.Notebook(root)
-        nb.pack(fill="both", expand=True, padx=8)
+        self.nb_main = ttk.Notebook(root)
+        self.nb_main.pack(fill="both", expand=True, padx=8)
 
-        self.tab_reg = ttk.Frame(nb, padding=10)
-        self.tab_stats = ttk.Frame(nb, padding=10)
-        self.tab_cat = ttk.Frame(nb, padding=10)
-        self.tab_cfg = ttk.Frame(nb, padding=10)
-        self.tab_ordenes = ttk.Frame(nb, padding=10)
-        nb.add(self.tab_reg, text="Registro")
-        nb.add(self.tab_stats, text="Estadísticas")
-        nb.add(self.tab_ordenes, text="Órdenes")
-        nb.add(self.tab_cat, text="Catálogos")
-        nb.add(self.tab_cfg, text="Configuración")
+        self.tab_reg = ttk.Frame(self.nb_main, padding=10)
+        self.tab_stats = ttk.Frame(self.nb_main, padding=10)
+        self.tab_cat = ttk.Frame(self.nb_main, padding=10)
+        self.tab_cfg = ttk.Frame(self.nb_main, padding=10)
+        self.tab_ordenes = ttk.Frame(self.nb_main, padding=10)
+        self.nb_main.add(self.tab_reg, text="Registro")
+        self.nb_main.add(self.tab_stats, text="Estadísticas")
+        self.nb_main.add(self.tab_ordenes, text="Órdenes")
+        self.nb_main.add(self.tab_cat, text="Catálogos")
+        self.nb_main.add(self.tab_cfg, text="Configuración")
 
         self._build_registro()
         self._build_stats()
         self._build_ordenes()
         self._build_catalogos()
         self._build_config()
+        self._apply_role_permissions()
 
         footer = tk.Frame(root, bg=COLOR_DARK, height=26)
         footer.pack(fill="x", pady=(8, 0))
@@ -1012,13 +1032,20 @@ class App(tk.Tk):
 
         cbtns = ttk.Frame(cargas)
         cbtns.pack(side="right", fill="y", padx=6)
-        ttk.Button(cbtns, text="Actualizar", command=self.refresh_cargas).pack(pady=4)
-        ttk.Button(cbtns, text="Editar", command=self.on_edit_carga).pack(pady=4)
-        ttk.Button(cbtns, text="Eliminar", command=self.on_delete_carga).pack(pady=4)
-        ttk.Button(cbtns, text="Imprimir", command=self.on_print_carga).pack(pady=4)
-        ttk.Button(cbtns, text="PDF", command=self.on_pdf_carga).pack(pady=4)
-        ttk.Button(cbtns, text="Exportar CSV", command=self.export_cargas_csv).pack(pady=4)
-        ttk.Button(cbtns, text="Exportar Excel", command=self.export_cargas_excel).pack(pady=4)
+        self.btn_cargas_refresh = ttk.Button(cbtns, text="Actualizar", command=self.refresh_cargas)
+        self.btn_cargas_refresh.pack(pady=4)
+        self.btn_cargas_edit = ttk.Button(cbtns, text="Editar", command=self.on_edit_carga)
+        self.btn_cargas_edit.pack(pady=4)
+        self.btn_cargas_delete = ttk.Button(cbtns, text="Eliminar", command=self.on_delete_carga)
+        self.btn_cargas_delete.pack(pady=4)
+        self.btn_cargas_print = ttk.Button(cbtns, text="Imprimir", command=self.on_print_carga)
+        self.btn_cargas_print.pack(pady=4)
+        self.btn_cargas_pdf = ttk.Button(cbtns, text="PDF", command=self.on_pdf_carga)
+        self.btn_cargas_pdf.pack(pady=4)
+        self.btn_cargas_csv = ttk.Button(cbtns, text="Exportar CSV", command=self.export_cargas_csv)
+        self.btn_cargas_csv.pack(pady=4)
+        self.btn_cargas_excel = ttk.Button(cbtns, text="Exportar Excel", command=self.export_cargas_excel)
+        self.btn_cargas_excel.pack(pady=4)
 
     def _build_catalogos(self):
         frm = self.tab_cat
