@@ -35,3 +35,12 @@ Los usuarios ahora incluyen: nombre y cédula.
 ```bash
 pytest -q
 ```
+
+## E2E (GUI)
+
+Mac (pyautogui):
+
+```bash
+pip install pyautogui
+python3 e2e/run_login_flow.py
+```
