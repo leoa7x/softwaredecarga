@@ -793,6 +793,9 @@ class App(tk.Tk):
             ):
                 if btn:
                     btn.state(["disabled"])
+            # Disable edit in orders, keep print/pdf
+            if getattr(self, "btn_orden_edit", None):
+                self.btn_orden_edit.state(["disabled"])
 
     def open_calendar(self, entry):
         if Calendar is None:
@@ -1124,9 +1127,12 @@ class App(tk.Tk):
 
         obtns = ttk.Frame(det)
         obtns.pack(fill="x", pady=(0, 8))
-        ttk.Button(obtns, text="Editar", command=self.on_edit_orden).pack(side="left", padx=6)
-        ttk.Button(obtns, text="Imprimir", command=self.on_print_orden).pack(side="left", padx=6)
-        ttk.Button(obtns, text="PDF", command=self.on_pdf_orden).pack(side="left", padx=6)
+        self.btn_orden_edit = ttk.Button(obtns, text="Editar", command=self.on_edit_orden)
+        self.btn_orden_edit.pack(side="left", padx=6)
+        self.btn_orden_print = ttk.Button(obtns, text="Imprimir", command=self.on_print_orden)
+        self.btn_orden_print.pack(side="left", padx=6)
+        self.btn_orden_pdf = ttk.Button(obtns, text="PDF", command=self.on_pdf_orden)
+        self.btn_orden_pdf.pack(side="left", padx=6)
 
         self.o_det = tk.Text(det, width=110, height=10)
         self.o_det.pack(fill="both", expand=True)
@@ -1801,6 +1807,8 @@ class App(tk.Tk):
 
     def on_update_carga(self):
         try:
+            if (self.user_info.get("role") or "").lower() == "operador":
+                raise ValueError("No tienes permisos para editar cargas.")
             cid = getattr(self, "carga_selected", None)
             if not cid:
                 raise ValueError("Selecciona una carga para actualizar (desde la lista).")
@@ -1953,6 +1961,8 @@ class App(tk.Tk):
 
     def on_delete_carga(self):
         try:
+            if (self.user_info.get("role") or "").lower() == "operador":
+                raise ValueError("No tienes permisos para eliminar cargas.")
             idx = self.cargas_list.curselection()
             if not idx:
                 raise ValueError("Selecciona una carga de la lista")
