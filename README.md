@@ -29,3 +29,9 @@ Los usuarios ahora incluyen: nombre y cédula.
 - `camiones_gui.py`: app principal
 - `camiones.db`: base de datos local (no se sube a GitHub)
 - `camion-de-carga.png`: logo opcional
+
+## Pruebas
+
+```bash
+pytest -q
+```

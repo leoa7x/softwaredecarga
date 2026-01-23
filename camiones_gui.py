@@ -50,7 +50,7 @@ def resource_path(rel):
     return os.path.join(app_dir(), rel)
 
 
-DB_PATH = os.path.join(app_dir(), "camiones.db")
+DB_PATH = os.getenv("CAMIONES_DB_PATH", os.path.join(app_dir(), "camiones.db"))
 
 
 # ---- DB helpers ----
