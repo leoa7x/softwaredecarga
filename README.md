@@ -50,3 +50,19 @@ python3 e2e/run_login_flow.py
 1) Instala Python desde https://www.python.org/downloads/ (marca "Add Python to PATH").
 2) Descomprime el proyecto.
 3) Ejecuta `run_windows.bat`.
+
+## Empaquetar a .exe en Windows
+
+1) Abre `CMD` o `PowerShell` en esta carpeta.
+2) Ejecuta `build_windows_exe.bat`.
+3) El ejecutable quedará en `dist/SistemaDeCargas.exe`.
+
+Notas:
+
+- El `.exe` se construye con PyInstaller.
+- Se incluye `camion-de-carga.png` dentro del paquete.
+- La base de datos `camiones.db` no se embebe.
+- En el `.exe` para Windows, la base se crea por defecto en `C:\SistemaDeCargas\camiones.db`.
+- Los backups se guardan en `C:\SistemaDeCargas\backups`.
+- Esto permite que varias sesiones de Terminal Server usen la misma base local del servidor.
+- Si necesitas otra ubicacion, puedes definir `CAMIONES_DB_PATH` o `CAMIONES_DATA_DIR`.

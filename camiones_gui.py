@@ -6,7 +6,10 @@ import sqlite3
 import hashlib
 import importlib.util
 import shutil
+import zipfile
+import textwrap
 from datetime import datetime
+from xml.etree import ElementTree as ET
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 try:
@@ -39,6 +42,17 @@ DEFAULT_USERS = [
 ]
 
 
+def default_data_dir():
+    if os.name == "nt" and getattr(sys, "frozen", False):
+        system_drive = os.environ.get("SystemDrive", "C:")
+        return os.path.join(system_drive, "SistemaDeCargas")
+    return app_dir()
+
+
+def default_db_path():
+    return os.path.join(default_data_dir(), "camiones.db")
+
+
 def app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
@@ -51,12 +65,14 @@ def resource_path(rel):
     return os.path.join(app_dir(), rel)
 
 
-DB_PATH = os.getenv("CAMIONES_DB_PATH", os.path.join(app_dir(), "camiones.db"))
+DATA_DIR = os.getenv("CAMIONES_DATA_DIR", default_data_dir())
+DB_PATH = os.getenv("CAMIONES_DB_PATH", os.path.join(DATA_DIR, "camiones.db"))
 
 
 # ---- DB helpers ----
 
 def connect_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -146,6 +162,72 @@ def init_db():
             );
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS solicitantes_compra (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre TEXT NOT NULL,
+                cedula TEXT UNIQUE,
+                telefono TEXT,
+                email TEXT,
+                cargo TEXT,
+                activo INTEGER DEFAULT 1
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS proveedores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre TEXT NOT NULL UNIQUE,
+                nit TEXT,
+                telefono TEXT,
+                contacto TEXT,
+                direccion TEXT,
+                activo INTEGER DEFAULT 1
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ordenes_compra (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                numero TEXT UNIQUE,
+                fecha TEXT NOT NULL,
+                solicitante_id INTEGER NOT NULL,
+                proveedor_id INTEGER,
+                condiciones_entrega TEXT,
+                condiciones_comerciales TEXT,
+                revisado_por TEXT,
+                subtotal REAL DEFAULT 0,
+                total REAL DEFAULT 0,
+                created_by TEXT,
+                created_at TEXT,
+                FOREIGN KEY (solicitante_id) REFERENCES solicitantes_compra(id),
+                FOREIGN KEY (proveedor_id) REFERENCES proveedores(id)
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS orden_compra_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                orden_compra_id INTEGER NOT NULL,
+                cantidad REAL NOT NULL,
+                descripcion TEXT NOT NULL,
+                valor_unitario REAL NOT NULL,
+                valor_total REAL NOT NULL,
+                FOREIGN KEY (orden_compra_id) REFERENCES ordenes_compra(id) ON DELETE CASCADE
+            );
+            """
+        )
+        oc_cols = table_columns(conn, "ordenes_compra")
+        if "subtotal" not in oc_cols:
+            conn.execute("ALTER TABLE ordenes_compra ADD COLUMN subtotal REAL DEFAULT 0")
+        if "total" not in oc_cols:
+            conn.execute("ALTER TABLE ordenes_compra ADD COLUMN total REAL DEFAULT 0")
+        if "revisado_por" not in oc_cols:
+            conn.execute("ALTER TABLE ordenes_compra ADD COLUMN revisado_por TEXT")
 
         # Migration if old schema exists
         cur = conn.execute(
@@ -286,6 +368,11 @@ def generate_orden(cid):
     return f"ORD-{today}-{cid:06d}"
 
 
+def generate_orden_compra(ocid):
+    today = datetime.today().strftime("%Y%m%d")
+    return f"OC-{today}-{ocid:06d}"
+
+
 def get_config(key):
     with connect_db() as conn:
         cur = conn.execute("SELECT value FROM config WHERE key = ?", (key,))
@@ -322,7 +409,7 @@ def authenticate_user(username, password):
 def backup_db():
     if not os.path.exists(DB_PATH):
         return None
-    backup_dir = os.path.join(app_dir(), "backups")
+    backup_dir = os.path.join(DATA_DIR, "backups")
     os.makedirs(backup_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = os.path.join(backup_dir, f"camiones_{ts}.db")
@@ -520,6 +607,497 @@ def delete_bodega(bid):
     with connect_db() as conn:
         conn.execute("DELETE FROM bodegas WHERE id = ?", (bid,))
         conn.commit()
+
+
+# ---- Ordenes de compra ----
+def list_solicitantes_compra():
+    with connect_db() as conn:
+        cur = conn.execute(
+            """
+            SELECT id, nombre, COALESCE(cedula, ''), COALESCE(telefono, ''),
+                   COALESCE(email, ''), COALESCE(cargo, ''), activo
+            FROM solicitantes_compra
+            ORDER BY nombre
+            """
+        )
+        return cur.fetchall()
+
+
+def add_solicitante_compra(nombre, cedula, telefono, email, cargo):
+    with connect_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO solicitantes_compra (nombre, cedula, telefono, email, cargo, activo)
+            VALUES (?, ?, ?, ?, ?, 1)
+            """,
+            (nombre, cedula or None, telefono or None, email or None, cargo or None),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_or_create_solicitante_compra(nombre, cedula, telefono="", email="", cargo=""):
+    with connect_db() as conn:
+        if cedula:
+            cur = conn.execute(
+                "SELECT id FROM solicitantes_compra WHERE cedula = ?",
+                (cedula,),
+            )
+            row = cur.fetchone()
+            if row:
+                return row[0]
+        cur = conn.execute(
+            "SELECT id FROM solicitantes_compra WHERE nombre = ? ORDER BY id LIMIT 1",
+            (nombre,),
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        cur = conn.execute(
+            """
+            INSERT INTO solicitantes_compra (nombre, cedula, telefono, email, cargo, activo)
+            VALUES (?, ?, ?, ?, ?, 1)
+            """,
+            (nombre, cedula or None, telefono or None, email or None, cargo or None),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def list_proveedores():
+    with connect_db() as conn:
+        cur = conn.execute(
+            """
+            SELECT id, nombre, COALESCE(nit, ''), COALESCE(telefono, ''),
+                   COALESCE(contacto, ''), COALESCE(direccion, ''), activo
+            FROM proveedores
+            ORDER BY nombre
+            """
+        )
+        return cur.fetchall()
+
+
+def add_proveedor(nombre, nit, telefono, contacto, direccion):
+    with connect_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO proveedores (nombre, nit, telefono, contacto, direccion, activo)
+            VALUES (?, ?, ?, ?, ?, 1)
+            """,
+            (nombre, nit or None, telefono or None, contacto or None, direccion or None),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def insert_orden_compra(
+    fecha,
+    solicitante_id,
+    proveedor_id,
+    condiciones_entrega,
+    condiciones_comerciales,
+    items,
+    revisado_por,
+    created_by,
+):
+    with connect_db() as conn:
+        subtotal = sum(float(item["valor_total"]) for item in items)
+        total = subtotal
+        cur = conn.execute(
+            """
+            INSERT INTO ordenes_compra (
+                fecha, solicitante_id, proveedor_id, condiciones_entrega,
+                condiciones_comerciales, revisado_por, subtotal, total, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fecha,
+                solicitante_id,
+                proveedor_id,
+                condiciones_entrega or None,
+                condiciones_comerciales or None,
+                revisado_por or None,
+                subtotal,
+                total,
+                created_by or None,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        ocid = cur.lastrowid
+        numero = generate_orden_compra(ocid)
+        conn.execute("UPDATE ordenes_compra SET numero = ? WHERE id = ?", (numero, ocid))
+        for item in items:
+            conn.execute(
+                """
+                INSERT INTO orden_compra_items (
+                    orden_compra_id, cantidad, descripcion, valor_unitario, valor_total
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    ocid,
+                    float(item["cantidad"]),
+                    item["descripcion"],
+                    float(item["valor_unitario"]),
+                    float(item["valor_total"]),
+                ),
+            )
+        conn.commit()
+        return ocid
+
+
+def list_ordenes_compra():
+    with connect_db() as conn:
+        cur = conn.execute(
+            """
+            SELECT oc.id, oc.numero, oc.fecha,
+                   s.nombre, COALESCE(s.cedula, ''),
+                   COALESCE(p.nombre, ''),
+                   COALESCE(oc.condiciones_entrega, ''),
+                   COALESCE(oc.revisado_por, ''),
+                   COALESCE(oc.total, 0)
+            FROM ordenes_compra oc
+            JOIN solicitantes_compra s ON s.id = oc.solicitante_id
+            LEFT JOIN proveedores p ON p.id = oc.proveedor_id
+            ORDER BY oc.fecha DESC, oc.id DESC
+            """
+        )
+        return cur.fetchall()
+
+
+def get_orden_compra(ocid):
+    with connect_db() as conn:
+        cur = conn.execute(
+            """
+            SELECT oc.id, oc.numero, oc.fecha,
+                   s.nombre, COALESCE(s.cedula, ''), COALESCE(s.telefono, ''),
+                   COALESCE(s.email, ''), COALESCE(s.cargo, ''),
+                   COALESCE(p.nombre, ''), COALESCE(p.nit, ''), COALESCE(p.telefono, ''),
+                   COALESCE(p.contacto, ''), COALESCE(p.direccion, ''),
+                   COALESCE(oc.condiciones_entrega, ''),
+                   COALESCE(oc.condiciones_comerciales, ''),
+                   COALESCE(oc.revisado_por, ''),
+                   COALESCE(oc.subtotal, 0),
+                   COALESCE(oc.total, 0),
+                   COALESCE(oc.created_by, ''),
+                   COALESCE(oc.created_at, '')
+            FROM ordenes_compra oc
+            JOIN solicitantes_compra s ON s.id = oc.solicitante_id
+            LEFT JOIN proveedores p ON p.id = oc.proveedor_id
+            WHERE oc.id = ?
+            """,
+            (ocid,),
+        )
+        return cur.fetchone()
+
+
+def list_orden_compra_items(ocid):
+    with connect_db() as conn:
+        cur = conn.execute(
+            """
+            SELECT id, cantidad, descripcion, valor_unitario, valor_total
+            FROM orden_compra_items
+            WHERE orden_compra_id = ?
+            ORDER BY id
+            """,
+            (ocid,),
+        )
+        return cur.fetchall()
+
+
+def approve_orden_compra(ocid, revisado_por):
+    with connect_db() as conn:
+        conn.execute(
+            "UPDATE ordenes_compra SET revisado_por = ? WHERE id = ?",
+            (revisado_por or None, ocid),
+        )
+        conn.commit()
+
+
+def export_orden_compra_excel(ocid, output_path):
+    row = get_orden_compra(ocid)
+    if not row:
+        raise ValueError("No se encontró la orden de compra.")
+    template_path = resource_path("ORDEN DE COMPRA.xlsx")
+    if not os.path.exists(template_path):
+        raise ValueError("No se encontró la plantilla ORDEN DE COMPRA.xlsx.")
+
+    (
+        _id,
+        numero,
+        fecha,
+        solicitante,
+        _cedula,
+        _telefono,
+        _email,
+        _cargo,
+        proveedor,
+        nit,
+        proveedor_tel,
+        contacto,
+        _direccion,
+        condiciones_entrega,
+        condiciones_comerciales,
+        revisado_por,
+        subtotal,
+        total,
+        _created_by,
+        _created_at,
+    ) = row
+    items = list_orden_compra_items(ocid)
+
+    ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+
+    def ensure_row(sheet_data, row_num):
+        for row_el in sheet_data.findall("a:row", ns):
+            if int(row_el.attrib.get("r", "0")) == row_num:
+                return row_el
+        row_el = ET.Element(f"{{{ns['a']}}}row", {"r": str(row_num)})
+        inserted = False
+        for existing in sheet_data.findall("a:row", ns):
+            if int(existing.attrib.get("r", "0")) > row_num:
+                sheet_data.insert(list(sheet_data).index(existing), row_el)
+                inserted = True
+                break
+        if not inserted:
+            sheet_data.append(row_el)
+        return row_el
+
+    def set_inline_string(sheet_data, ref, text):
+        row_num = int("".join(ch for ch in ref if ch.isdigit()))
+        row_el = ensure_row(sheet_data, row_num)
+        cell = None
+        for c in row_el.findall("a:c", ns):
+            if c.attrib.get("r") == ref:
+                cell = c
+                break
+        if cell is None:
+            cell = ET.SubElement(row_el, f"{{{ns['a']}}}c", {"r": ref, "t": "inlineStr"})
+        else:
+            cell.clear()
+            cell.attrib.update({"r": ref, "t": "inlineStr"})
+        is_el = ET.SubElement(cell, f"{{{ns['a']}}}is")
+        t_el = ET.SubElement(is_el, f"{{{ns['a']}}}t")
+        t_el.text = str(text or "")
+
+    def set_number(sheet_data, ref, value):
+        row_num = int("".join(ch for ch in ref if ch.isdigit()))
+        row_el = ensure_row(sheet_data, row_num)
+        cell = None
+        for c in row_el.findall("a:c", ns):
+            if c.attrib.get("r") == ref:
+                cell = c
+                break
+        if cell is None:
+            cell = ET.SubElement(row_el, f"{{{ns['a']}}}c", {"r": ref})
+        else:
+            existing_style = cell.attrib.get("s")
+            cell.clear()
+            cell.attrib.update({"r": ref})
+            if existing_style is not None:
+                cell.attrib["s"] = existing_style
+        v_el = ET.SubElement(cell, f"{{{ns['a']}}}v")
+        v_el.text = f"{float(value):.2f}"
+
+    with zipfile.ZipFile(template_path, "r") as src:
+        files = {name: src.read(name) for name in src.namelist()}
+
+    ws = ET.fromstring(files["xl/worksheets/sheet1.xml"])
+    sheet_data = ws.find("a:sheetData", ns)
+    if sheet_data is None:
+        raise ValueError("La plantilla Excel no contiene sheetData.")
+
+    set_inline_string(sheet_data, "C3", fecha)
+    set_inline_string(sheet_data, "G3", numero)
+    set_inline_string(sheet_data, "K3", solicitante)
+    set_inline_string(sheet_data, "C4", condiciones_entrega)
+    set_inline_string(sheet_data, "G4", proveedor)
+    set_inline_string(sheet_data, "G5", nit)
+    set_inline_string(sheet_data, "G6", proveedor_tel)
+    set_inline_string(sheet_data, "G7", contacto)
+    set_inline_string(sheet_data, "K4", condiciones_comerciales)
+
+    start_row = 12
+    for offset in range(9):
+        row_num = start_row + offset
+        if offset < len(items):
+            _item_id, cantidad, descripcion, valor_unitario, valor_total = items[offset]
+            set_number(sheet_data, f"A{row_num}", cantidad)
+            set_inline_string(sheet_data, f"B{row_num}", descripcion)
+            set_number(sheet_data, f"I{row_num}", valor_unitario)
+            set_number(sheet_data, f"K{row_num}", valor_total)
+        else:
+            set_inline_string(sheet_data, f"A{row_num}", "")
+            set_inline_string(sheet_data, f"B{row_num}", "")
+            set_inline_string(sheet_data, f"I{row_num}", "")
+            set_inline_string(sheet_data, f"J{row_num}", "")
+            set_inline_string(sheet_data, f"K{row_num}", "")
+
+    set_number(sheet_data, "K21", subtotal)
+    set_number(sheet_data, "K22", total)
+    set_inline_string(sheet_data, "E22", revisado_por)
+
+    files["xl/worksheets/sheet1.xml"] = ET.tostring(ws, encoding="utf-8", xml_declaration=True)
+    files.pop("xl/calcChain.xml", None)
+    if "[Content_Types].xml" in files:
+        ct = files["[Content_Types].xml"].decode("utf-8", errors="ignore")
+        ct = ct.replace(
+            '<Override PartName="/xl/calcChain.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml"/>',
+            "",
+        )
+        files["[Content_Types].xml"] = ct.encode("utf-8")
+
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as dst:
+        for name, data in files.items():
+            dst.writestr(name, data)
+
+
+def export_orden_compra_pdf(ocid, output_path):
+    row = get_orden_compra(ocid)
+    if not row:
+        raise ValueError("No se encontró la orden de compra.")
+    items = list_orden_compra_items(ocid)
+    try:
+        from reportlab.lib import colors
+        from reportlab.pdfgen import canvas
+    except Exception:
+        raise ValueError("Falta reportlab. Instala: pip install reportlab")
+
+    (
+        _id,
+        numero,
+        fecha,
+        solicitante,
+        _cedula,
+        _telefono,
+        _email,
+        _cargo,
+        _proveedor,
+        _nit,
+        _proveedor_tel,
+        _contacto,
+        _direccion,
+        condiciones_entrega,
+        condiciones_comerciales,
+        revisado_por,
+        subtotal,
+        total,
+        _created_by,
+        _created_at,
+    ) = row
+    header = get_config("encabezado") or "RECIBO DE CARGA"
+    nit_empresa = get_config("nit")
+    direccion_empresa = get_config("direccion")
+    telefono_empresa = get_config("telefono")
+
+    half_letter = (8.5 * 72, 5.5 * 72)
+    c = canvas.Canvas(output_path, pagesize=half_letter)
+    width, height = half_letter
+    margin = 36
+    logo_path = get_config("logo_path")
+    nota_pie = get_config("nota_pie")
+
+    c.setFillColor(colors.whitesmoke)
+    c.rect(0, 0, width, height, stroke=0, fill=1)
+    c.setFillColor(colors.Color(0.92, 0.92, 0.92))
+    c.rect(0, height - 92, width, 92, stroke=0, fill=1)
+    c.setFillColor(colors.black)
+
+    logo_w = 76
+    gap = 12
+    header_x = margin + logo_w + gap
+    header_w = width - (2 * margin) - logo_w - gap
+    if logo_path and os.path.exists(logo_path):
+        try:
+            c.drawImage(
+                logo_path,
+                margin,
+                height - margin - 50,
+                width=logo_w,
+                height=50,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+        except Exception:
+            pass
+
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(header_x + (header_w / 2), height - margin - 10, header)
+    c.setFont("Helvetica-Bold", 13)
+    c.drawCentredString(header_x + (header_w / 2), height - margin - 28, "ORDEN DE COMPRA")
+
+    c.setFont("Helvetica", 8.5)
+    info_y = height - margin - 46
+    for line in [l for l in [f"NIT: {nit_empresa}" if nit_empresa else "", f"Dirección: {direccion_empresa}" if direccion_empresa else "", f"Teléfono: {telefono_empresa}" if telefono_empresa else ""] if l]:
+        c.drawCentredString(header_x + (header_w / 2), info_y, line)
+        info_y -= 10
+
+    box_left = margin
+    box_right = width - margin
+    box_top = height - margin - 104
+    box_bottom = 98
+    c.setStrokeColor(colors.grey)
+    c.setLineWidth(0.6)
+    c.rect(box_left, box_bottom, box_right - box_left, box_top - box_bottom, stroke=1, fill=0)
+
+    c.setFillColor(colors.Color(0.85, 0.85, 0.85))
+    c.rect(box_left, box_top - 18, box_right - box_left, 18, stroke=0, fill=1)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(box_left + 6, box_top - 14, "DETALLE DE ORDEN DE COMPRA")
+
+    lines = [
+        f"Orden de compra: {numero}",
+        f"Fecha impresión: {datetime.today().strftime('%Y-%m-%d %H:%M')}",
+        f"Solicitado por: {solicitante}",
+        f"Revisado por: {revisado_por}",
+        "",
+        f"Fecha de la orden: {fecha}",
+        f"Condiciones de entrega: {condiciones_entrega or '-'}",
+        f"Condiciones comerciales: {condiciones_comerciales or '-'}",
+        "",
+        "Items:",
+    ]
+    for _iid, cantidad, descripcion, valor_unitario, valor_total in items:
+        lines.append(
+            f"{cantidad:.2f} | {descripcion} | Unit: {valor_unitario:,.2f} | Total: {valor_total:,.2f}"
+        )
+    lines.extend([
+        "",
+        f"Subtotal: {float(subtotal):,.2f}",
+        f"Total: {float(total):,.2f}",
+    ])
+
+    wrapped_lines = []
+    for line in lines:
+        if not line:
+            wrapped_lines.append("")
+            continue
+        width_hint = 72 if line.startswith("Condiciones") else 88
+        wrapped_lines.extend(textwrap.wrap(str(line), width=width_hint) or [""])
+
+    c.setFont("Helvetica", 8.2)
+    text_x = box_left + 6
+    text_y = box_top - 24
+    for line in wrapped_lines[:22]:
+        c.drawString(text_x, text_y, line)
+        text_y -= 8.6
+
+    sig_y = 68
+    c.line(margin, sig_y, width / 2 - 20, sig_y)
+    c.line(width / 2 + 20, sig_y, width - margin, sig_y)
+    c.setFont("Helvetica", 10)
+    c.drawString(margin, sig_y - 14, "Solicitado por")
+    c.drawString(width / 2 + 20, sig_y - 14, "Revisado y aprobado por")
+    c.setFont("Helvetica", 9)
+    c.drawString(margin, sig_y - 28, solicitante or "")
+    c.drawString(width / 2 + 20, sig_y - 28, revisado_por or "")
+
+    c.setFont("Helvetica-Oblique", 7.5)
+    c.drawCentredString(width / 2, 10, f"Orden elaborada por sistema: {APP_NAME}")
+    if nota_pie:
+        c.drawCentredString(width / 2, 24, nota_pie)
+
+    c.save()
 
 
 # ---- Cargas ----
@@ -745,7 +1323,7 @@ def list_alertas():
 
     alerta = []
     for placa, conductor, tipo, f_carga, f_descarga, peso in rows:
-        estado = "ENTREGADO" if f_descarga > hoy else "PENDIENTE"
+        estado = "PENDIENTE" if f_descarga > hoy else "ENTREGADO"
         alerta.append((placa, conductor, tipo, f_carga, f_descarga, peso, estado))
     return alerta
 
@@ -892,11 +1470,9 @@ class App(tk.Tk):
     def _apply_role_permissions(self):
         role = (self.user_info.get("role") or "").lower()
         if role == "operador":
-            # Disable admin-only tabs
+            # Disable admin-only section
             try:
-                self.nb_main.tab(self.tab_cat, state="disabled")
-                self.nb_main.tab(self.tab_cfg, state="disabled")
-                self.nb_main.tab(self.tab_users, state="disabled")
+                self.nb_main.tab(self.tab_admin, state="disabled")
             except Exception:
                 pass
             # Disable destructive actions
@@ -982,18 +1558,34 @@ class App(tk.Tk):
         self.nb_main = ttk.Notebook(root)
         self.nb_main.pack(fill="both", expand=True, padx=8)
 
-        self.tab_reg = ttk.Frame(self.nb_main, padding=10)
-        self.tab_stats = ttk.Frame(self.nb_main, padding=10)
-        self.tab_cat = ttk.Frame(self.nb_main, padding=10)
-        self.tab_cfg = ttk.Frame(self.nb_main, padding=10)
-        self.tab_ordenes = ttk.Frame(self.nb_main, padding=10)
-        self.tab_users = ttk.Frame(self.nb_main, padding=10)
-        self.nb_main.add(self.tab_reg, text="Registro")
-        self.nb_main.add(self.tab_stats, text="Estadísticas")
-        self.nb_main.add(self.tab_ordenes, text="Órdenes")
-        self.nb_main.add(self.tab_cat, text="Catálogos")
-        self.nb_main.add(self.tab_cfg, text="Configuración")
-        self.nb_main.add(self.tab_users, text="Usuarios")
+        self.tab_ops = ttk.Frame(self.nb_main, padding=10)
+        self.tab_queries = ttk.Frame(self.nb_main, padding=10)
+        self.tab_admin = ttk.Frame(self.nb_main, padding=10)
+        self.nb_main.add(self.tab_ops, text="Operación")
+        self.nb_main.add(self.tab_queries, text="Consulta")
+        self.nb_main.add(self.tab_admin, text="Administración")
+
+        self.nb_ops = ttk.Notebook(self.tab_ops)
+        self.nb_ops.pack(fill="both", expand=True)
+        self.nb_queries = ttk.Notebook(self.tab_queries)
+        self.nb_queries.pack(fill="both", expand=True)
+        self.nb_admin = ttk.Notebook(self.tab_admin)
+        self.nb_admin.pack(fill="both", expand=True)
+
+        self.tab_reg = ttk.Frame(self.nb_ops, padding=10)
+        self.nb_ops.add(self.tab_reg, text="Registro")
+
+        self.tab_stats = ttk.Frame(self.nb_queries, padding=10)
+        self.tab_ordenes = ttk.Frame(self.nb_queries, padding=10)
+        self.nb_queries.add(self.tab_stats, text="Estadísticas")
+        self.nb_queries.add(self.tab_ordenes, text="Órdenes")
+
+        self.tab_cat = ttk.Frame(self.nb_admin, padding=10)
+        self.tab_cfg = ttk.Frame(self.nb_admin, padding=10)
+        self.tab_users = ttk.Frame(self.nb_admin, padding=10)
+        self.nb_admin.add(self.tab_cat, text="Catálogos")
+        self.nb_admin.add(self.tab_cfg, text="Configuración")
+        self.nb_admin.add(self.tab_users, text="Usuarios")
 
         self._build_registro()
         self._build_stats()
@@ -1030,8 +1622,50 @@ class App(tk.Tk):
         self.bind_all("<Delete>", lambda _e: self.on_delete_carga())
         self.bind_all("<Escape>", lambda _e: self.clear_ordenes_filters())
 
+    def _current_user_name(self):
+        return self.user_info.get("nombre") or self.user_info.get("username") or ""
+
+    def _current_user_cedula(self):
+        return self.user_info.get("cedula") or ""
+
+    def _current_user_display(self):
+        nombre = self._current_user_name()
+        cedula = self._current_user_cedula()
+        return f"{nombre} (CC {cedula})" if cedula else nombre
+
+    def _toggle_registro_mode(self, *_args):
+        mode = self.reg_mode.get() if hasattr(self, "reg_mode") else "Carga"
+        if hasattr(self, "reg_carga_frame"):
+            if mode == "Carga":
+                self.reg_carga_frame.pack(fill="both", expand=True)
+            else:
+                self.reg_carga_frame.pack_forget()
+        if hasattr(self, "reg_oc_frame"):
+            if mode == "Orden de compra":
+                self.reg_oc_frame.pack(fill="both", expand=True)
+            else:
+                self.reg_oc_frame.pack_forget()
+
     def _build_registro(self):
         frm = self.tab_reg
+
+        top = ttk.Frame(frm)
+        top.pack(fill="x", pady=(0, 8))
+        ttk.Label(top, text="Tipo de registro").pack(side="left")
+        self.reg_mode = tk.StringVar(value="Carga")
+        reg_selector = ttk.Combobox(
+            top,
+            width=22,
+            state="readonly",
+            textvariable=self.reg_mode,
+            values=["Carga", "Orden de compra"],
+        )
+        reg_selector.pack(side="left", padx=8)
+        reg_selector.bind("<<ComboboxSelected>>", self._toggle_registro_mode)
+
+        self.reg_carga_frame = ttk.Frame(frm)
+        self.reg_carga_frame.pack(fill="both", expand=True)
+        self.reg_oc_frame = ttk.Frame(frm)
 
         fields = [
             ("Vehículo (placa)", "vehiculo"),
@@ -1048,9 +1682,9 @@ class App(tk.Tk):
 
         self.inputs = {}
 
-        left = ttk.Frame(frm)
+        left = ttk.Frame(self.reg_carga_frame)
         left.pack(side="left", fill="y")
-        right = ttk.Frame(frm)
+        right = ttk.Frame(self.reg_carga_frame)
         right.pack(side="left", padx=20, fill="both", expand=True)
 
         for i, (label, key) in enumerate(fields):
@@ -1090,12 +1724,15 @@ class App(tk.Tk):
             "Instructivo rápido:\n"
             "- Crea conductores, vehículos, tipos, ciudades y bodegas en Catálogos.\n"
             "- Registra una carga y el sistema genera la orden automática.\n"
+            f"- Usuario actual: {self._current_user_display()}.\n"
             "- Usa los filtros en Órdenes para buscar e imprimir/PDF.\n"
             "- Fechas: usa el botón \"Cal\".\n"
             "- Peso: solo números.\n"
             "Soporte: WhatsApp 3123146044 - Ing Leonardo Sanchez"
         )
         ttk.Label(right, text=info, justify="left").pack(anchor="nw")
+        self._build_ordenes_compra(self.reg_oc_frame)
+        self._toggle_registro_mode()
 
     def _build_stats(self):
         frm = self.tab_stats
@@ -1152,7 +1789,7 @@ class App(tk.Tk):
         ttk.Button(btns, text="Actualizar", command=self.refresh_alertas).pack(pady=4)
         ttk.Label(
             btns,
-            text="Regla:\n- fecha_descarga > hoy = ENTREGADO\n- fecha_descarga < hoy = PENDIENTE",
+            text="Regla:\n- fecha_descarga > hoy = PENDIENTE\n- fecha_descarga <= hoy = ENTREGADO",
             justify="left",
         ).pack(pady=6)
 
@@ -1317,6 +1954,94 @@ class App(tk.Tk):
 
         self.o_det = tk.Text(det, width=120, height=12)
         self.o_det.pack(fill="both", expand=True)
+
+    def _build_ordenes_compra(self, parent=None):
+        frm = parent or self.tab_reg
+
+        top = ttk.LabelFrame(frm, text="Nueva orden de compra", padding=10)
+        top.pack(fill="x")
+
+        ttk.Label(top, text="Consecutivo").grid(row=0, column=0, sticky="w")
+        self.oc_numero = ttk.Entry(top, width=24)
+        self.oc_numero.grid(row=0, column=1, padx=6, pady=4, sticky="w")
+        self.oc_numero.insert(0, "Se genera al guardar")
+        self.oc_numero.state(["readonly"])
+
+        ttk.Label(top, text="Fecha").grid(row=0, column=2, sticky="w")
+        oc_fecha_frame, self.oc_fecha = self._date_field(top, 16)
+        oc_fecha_frame.grid(row=0, column=3, padx=6, pady=4, sticky="w")
+        self.oc_fecha.insert(0, datetime.today().strftime("%Y-%m-%d"))
+
+        ttk.Label(top, text="Solicitado por").grid(row=1, column=0, sticky="w")
+        self.oc_solicitante_info = ttk.Label(top, text=self._current_user_display())
+        self.oc_solicitante_info.grid(row=1, column=1, columnspan=3, padx=6, pady=4, sticky="w")
+
+        ttk.Label(top, text="Estado aprobación").grid(row=3, column=0, sticky="w")
+        self.oc_revisado_info = ttk.Label(top, text="Pendiente de aprobación")
+        self.oc_revisado_info.grid(row=3, column=1, columnspan=3, padx=6, pady=4, sticky="w")
+
+        ttk.Label(top, text="Condiciones de entrega").grid(row=4, column=0, sticky="nw")
+        self.oc_cond_entrega = tk.Text(top, width=62, height=4)
+        self.oc_cond_entrega.grid(row=4, column=1, columnspan=3, padx=6, pady=4, sticky="we")
+
+        ttk.Label(top, text="Condiciones comerciales").grid(row=5, column=0, sticky="nw")
+        self.oc_cond_comerciales = tk.Text(top, width=62, height=4)
+        self.oc_cond_comerciales.grid(row=5, column=1, columnspan=3, padx=6, pady=4, sticky="we")
+
+        items_box = ttk.LabelFrame(top, text="Items de la orden", padding=8)
+        items_box.grid(row=6, column=0, columnspan=4, padx=6, pady=6, sticky="we")
+
+        ttk.Label(items_box, text="Cant.").grid(row=0, column=0, sticky="w")
+        self.oc_item_cant = ttk.Entry(items_box, width=8)
+        self.oc_item_cant.grid(row=0, column=1, padx=4, pady=4)
+
+        ttk.Label(items_box, text="Descripción").grid(row=0, column=2, sticky="w")
+        self.oc_item_desc = ttk.Entry(items_box, width=44)
+        self.oc_item_desc.grid(row=0, column=3, padx=4, pady=4)
+
+        ttk.Label(items_box, text="Valor unitario").grid(row=0, column=4, sticky="w")
+        self.oc_item_unit = ttk.Entry(items_box, width=14)
+        self.oc_item_unit.grid(row=0, column=5, padx=4, pady=4)
+
+        ttk.Button(items_box, text="Agregar item", command=self.on_add_oc_item).grid(
+            row=0, column=6, padx=4, pady=4
+        )
+        ttk.Button(items_box, text="Quitar item", command=self.on_remove_oc_item).grid(
+            row=0, column=7, padx=4, pady=4
+        )
+
+        self.oc_items_list = tk.Listbox(items_box, height=8, width=110)
+        self.oc_items_list.grid(row=1, column=0, columnspan=8, padx=4, pady=6, sticky="we")
+        self.oc_items = []
+
+        totals = ttk.Frame(items_box)
+        totals.grid(row=2, column=0, columnspan=8, sticky="e")
+        self.oc_subtotal_lbl = ttk.Label(totals, text="Subtotal: 0.00")
+        self.oc_subtotal_lbl.pack(side="left", padx=8)
+        self.oc_total_lbl = ttk.Label(totals, text="Total: 0.00")
+        self.oc_total_lbl.pack(side="left", padx=8)
+
+        btns = ttk.Frame(top)
+        btns.grid(row=7, column=0, columnspan=4, pady=(8, 0), sticky="w")
+        ttk.Button(btns, text="Guardar orden", command=self.on_save_orden_compra).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Generar PDF", command=self.on_pdf_orden_compra).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Historial / Reimprimir", command=self.open_oc_history).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Limpiar", command=self.clear_orden_compra_form).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Actualizar", command=self.refresh_ordenes_compra).pack(side="left")
+
+        bottom = ttk.LabelFrame(frm, text="Órdenes de compra registradas", padding=10)
+        bottom.pack(fill="both", expand=True, pady=(10, 0))
+
+        self.oc_search = ttk.Entry(bottom, width=36)
+        self.oc_search.pack(anchor="w", pady=(0, 6))
+        self.oc_search.bind("<KeyRelease>", lambda _e: self.refresh_ordenes_compra())
+
+        self.oc_list = tk.Listbox(bottom, height=12, width=120)
+        self.oc_list.pack(fill="both", expand=True)
+        self.oc_list.bind("<<ListboxSelect>>", self.on_select_orden_compra)
+
+        self.oc_detail = tk.Text(bottom, width=120, height=12)
+        self.oc_detail.pack(fill="both", expand=True, pady=(8, 0))
 
     def _build_config(self):
         frm = self.tab_cfg
@@ -1502,12 +2227,22 @@ class App(tk.Tk):
         self.tipos = list_tipos()
         self.ciudades = list_ciudades()
         self.bodegas = list_bodegas()
+        self.solicitantes_compra = list_solicitantes_compra()
+        self.proveedores = list_proveedores()
 
         self.conductores_by_id = {cid: (cid, nombre, cedula) for cid, nombre, cedula in self.conductores}
         self.vehiculos_by_id = {vid: (vid, placa) for vid, placa in self.vehiculos}
         self.tipos_by_id = {tid: (tid, nombre) for tid, nombre in self.tipos}
         self.ciudades_by_id = {cid: (cid, nombre) for cid, nombre in self.ciudades}
         self.bodegas_by_id = {bid: (bid, nombre, ciudad) for bid, nombre, ciudad in self.bodegas}
+        self.solicitantes_by_id = {
+            sid: (sid, nombre, cedula, telefono, email, cargo, activo)
+            for sid, nombre, cedula, telefono, email, cargo, activo in self.solicitantes_compra
+        }
+        self.proveedores_by_id = {
+            pid: (pid, nombre, nit, telefono, contacto, direccion, activo)
+            for pid, nombre, nit, telefono, contacto, direccion, activo in self.proveedores
+        }
 
         self.map_conductores = {}
         c_labels = []
@@ -1541,6 +2276,34 @@ class App(tk.Tk):
             self.map_bodegas[label] = bid
             b_labels.append(label)
 
+        self.map_solicitantes = {}
+        s_labels = []
+        for sid, nombre, cedula, _telefono, _email, cargo, activo in self.solicitantes_compra:
+            if not activo:
+                continue
+            parts = [nombre]
+            if cedula:
+                parts.append(f"CC {cedula}")
+            if cargo:
+                parts.append(cargo)
+            label = " | ".join(parts)
+            self.map_solicitantes[label] = sid
+            s_labels.append(label)
+
+        self.map_proveedores = {}
+        p_labels = []
+        for pid, nombre, nit, _telefono, contacto, _direccion, activo in self.proveedores:
+            if not activo:
+                continue
+            parts = [nombre]
+            if nit:
+                parts.append(f"NIT {nit}")
+            if contacto:
+                parts.append(contacto)
+            label = " | ".join(parts)
+            self.map_proveedores[label] = pid
+            p_labels.append(label)
+
         for key in ("conductor",):
             self.inputs[key]["values"] = c_labels
         for key in ("vehiculo",):
@@ -1557,11 +2320,11 @@ class App(tk.Tk):
         self.b_ciudad["values"] = ci_labels
         self.o_vehiculo["values"] = v_labels
         self.o_tipo["values"] = t_labels
-
         self._refresh_catalog_lists()
         self.refresh_alertas()
         self.refresh_cargas()
         self.refresh_ordenes()
+        self.refresh_ordenes_compra()
         self.refresh_users()
         self.load_config()
         self._refresh_dependency_warnings()
@@ -2288,6 +3051,488 @@ class App(tk.Tk):
         self.o_fin.delete(0, tk.END)
         self.refresh_ordenes()
 
+    def _text_value(self, widget):
+        return widget.get("1.0", tk.END).strip()
+
+    def clear_orden_compra_form(self):
+        if hasattr(self, "oc_fecha"):
+            self.oc_fecha.delete(0, tk.END)
+            self.oc_fecha.insert(0, datetime.today().strftime("%Y-%m-%d"))
+        if hasattr(self, "oc_numero"):
+            self.oc_numero.state(["!readonly"])
+            self.oc_numero.delete(0, tk.END)
+            self.oc_numero.insert(0, "Se genera al guardar")
+            self.oc_numero.state(["readonly"])
+        if hasattr(self, "oc_revisado_info"):
+            self.oc_revisado_info.config(text="Pendiente de aprobación")
+        for widget_name in ("oc_cond_entrega", "oc_cond_comerciales"):
+            widget = getattr(self, widget_name, None)
+            if widget:
+                widget.delete("1.0", tk.END)
+        for widget_name in ("oc_item_cant", "oc_item_desc", "oc_item_unit"):
+            widget = getattr(self, widget_name, None)
+            if widget:
+                widget.delete(0, tk.END)
+        if hasattr(self, "oc_items_list"):
+            self.oc_items_list.delete(0, tk.END)
+        self.oc_items = []
+        self._refresh_oc_totals()
+
+    def _refresh_oc_totals(self):
+        subtotal = sum(item["valor_total"] for item in getattr(self, "oc_items", []))
+        if hasattr(self, "oc_subtotal_lbl"):
+            self.oc_subtotal_lbl.config(text=f"Subtotal: {subtotal:.2f}")
+        if hasattr(self, "oc_total_lbl"):
+            self.oc_total_lbl.config(text=f"Total: {subtotal:.2f}")
+
+    def on_add_oc_item(self):
+        try:
+            cantidad = float(self.oc_item_cant.get().strip())
+            descripcion = self.oc_item_desc.get().strip()
+            valor_unitario = float(self.oc_item_unit.get().strip())
+            if cantidad <= 0:
+                raise ValueError("La cantidad debe ser positiva.")
+            if valor_unitario < 0:
+                raise ValueError("El valor unitario no puede ser negativo.")
+            if not descripcion:
+                raise ValueError("La descripción es requerida.")
+            if len(self.oc_items) >= 9:
+                raise ValueError("La plantilla soporta hasta 9 items visibles.")
+            valor_total = cantidad * valor_unitario
+            item = {
+                "cantidad": cantidad,
+                "descripcion": descripcion,
+                "valor_unitario": valor_unitario,
+                "valor_total": valor_total,
+            }
+            self.oc_items.append(item)
+            self.oc_items_list.insert(
+                tk.END,
+                f"{cantidad:.2f} | {descripcion} | Unit: {valor_unitario:.2f} | Total: {valor_total:.2f}",
+            )
+            self.oc_item_cant.delete(0, tk.END)
+            self.oc_item_desc.delete(0, tk.END)
+            self.oc_item_unit.delete(0, tk.END)
+            self._refresh_oc_totals()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def on_remove_oc_item(self):
+        idx = self.oc_items_list.curselection()
+        if not idx:
+            return
+        i = idx[0]
+        if i < len(self.oc_items):
+            del self.oc_items[i]
+        self.oc_items_list.delete(i)
+        self._refresh_oc_totals()
+
+    def on_new_solicitante(self):
+        win = tk.Toplevel(self)
+        win.title("Nuevo solicitante")
+        win.geometry("460x260")
+        win.resizable(False, False)
+
+        fields = {}
+        labels = [
+            ("Nombre", "nombre"),
+            ("Cédula", "cedula"),
+            ("Teléfono", "telefono"),
+            ("Correo", "email"),
+            ("Cargo", "cargo"),
+        ]
+        for row, (label, key) in enumerate(labels):
+            ttk.Label(win, text=label).grid(row=row, column=0, sticky="w", padx=10, pady=6)
+            entry = ttk.Entry(win, width=38)
+            entry.grid(row=row, column=1, padx=10, pady=6)
+            fields[key] = entry
+
+        def save():
+            try:
+                nombre = fields["nombre"].get().strip()
+                cedula = fields["cedula"].get().strip()
+                telefono = fields["telefono"].get().strip()
+                email = fields["email"].get().strip()
+                cargo = fields["cargo"].get().strip()
+                if not nombre:
+                    raise ValueError("Nombre requerido.")
+                add_solicitante_compra(nombre, cedula, telefono, email, cargo)
+                self.refresh_all_lists()
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+        ttk.Button(win, text="Guardar", command=save).grid(row=len(labels), column=0, padx=10, pady=12)
+        ttk.Button(win, text="Cancelar", command=win.destroy).grid(row=len(labels), column=1, padx=10, pady=12, sticky="w")
+
+    def on_new_proveedor(self):
+        win = tk.Toplevel(self)
+        win.title("Nuevo proveedor")
+        win.geometry("500x280")
+        win.resizable(False, False)
+
+        fields = {}
+        labels = [
+            ("Nombre", "nombre"),
+            ("NIT", "nit"),
+            ("Teléfono", "telefono"),
+            ("Contacto", "contacto"),
+            ("Dirección", "direccion"),
+        ]
+        for row, (label, key) in enumerate(labels):
+            ttk.Label(win, text=label).grid(row=row, column=0, sticky="w", padx=10, pady=6)
+            entry = ttk.Entry(win, width=42)
+            entry.grid(row=row, column=1, padx=10, pady=6)
+            fields[key] = entry
+
+        def save():
+            try:
+                nombre = fields["nombre"].get().strip()
+                nit = fields["nit"].get().strip()
+                telefono = fields["telefono"].get().strip()
+                contacto = fields["contacto"].get().strip()
+                direccion = fields["direccion"].get().strip()
+                if not nombre:
+                    raise ValueError("Nombre requerido.")
+                pid = add_proveedor(nombre, nit, telefono, contacto, direccion)
+                self.refresh_all_lists()
+                selected = next(
+                    (label for label, item_id in self.map_proveedores.items() if item_id == pid),
+                    "",
+                )
+                if selected:
+                    self.oc_proveedor.set(selected)
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+        ttk.Button(win, text="Guardar", command=save).grid(row=len(labels), column=0, padx=10, pady=12)
+        ttk.Button(win, text="Cancelar", command=win.destroy).grid(row=len(labels), column=1, padx=10, pady=12, sticky="w")
+
+    def on_save_orden_compra(self):
+        try:
+            fecha = parse_date(self.oc_fecha.get().strip())
+            condiciones_entrega = self._text_value(self.oc_cond_entrega)
+            condiciones_comerciales = self._text_value(self.oc_cond_comerciales)
+
+            solicitante_id = get_or_create_solicitante_compra(
+                self._current_user_name(),
+                self._current_user_cedula(),
+            )
+
+            if not condiciones_entrega:
+                raise ValueError("Las condiciones de entrega son requeridas.")
+            if not self.oc_items:
+                raise ValueError("Debes agregar al menos un item.")
+
+            ocid = insert_orden_compra(
+                fecha,
+                solicitante_id,
+                None,
+                condiciones_entrega,
+                condiciones_comerciales,
+                self.oc_items,
+                None,
+                self._current_user_display(),
+            )
+            numero = generate_orden_compra(ocid)
+            self.oc_numero.state(["!readonly"])
+            self.oc_numero.delete(0, tk.END)
+            self.oc_numero.insert(0, numero)
+            self.oc_numero.state(["readonly"])
+            self.refresh_ordenes_compra()
+            if hasattr(self, "oc_list"):
+                try:
+                    idx = self.oc_ids.index(ocid)
+                    self.oc_list.selection_clear(0, tk.END)
+                    self.oc_list.selection_set(idx)
+                    self.oc_list.see(idx)
+                    self.on_select_orden_compra()
+                except Exception:
+                    pass
+            if messagebox.askyesno("PDF", f"Orden de compra registrada: {numero}\n\n¿Generar el PDF ahora?"):
+                path = filedialog.asksaveasfilename(
+                    title="Guardar orden de compra PDF",
+                    defaultextension=".pdf",
+                    filetypes=[("PDF", "*.pdf")],
+                    initialfile=f"{numero}.pdf",
+                )
+                if path:
+                    export_orden_compra_pdf(ocid, path)
+                    messagebox.showinfo("OK", "PDF generado.")
+            self.clear_orden_compra_form()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def refresh_ordenes_compra(self):
+        if not hasattr(self, "oc_list"):
+            return
+        term = self.oc_search.get().strip().lower() if hasattr(self, "oc_search") else ""
+        items = list_ordenes_compra()
+        self.oc_list.delete(0, tk.END)
+        self.oc_ids = []
+        for ocid, numero, fecha, solicitante, cedula, _proveedor, _cond_entrega, revisado, total in items:
+            line = f"{numero} | Fecha: {fecha} | Solicitante: {solicitante} | Total: {float(total):.2f}"
+            hay = f"{numero} {fecha} {solicitante} {cedula} {revisado} {total}".lower()
+            if term and term not in hay:
+                continue
+            self.oc_list.insert(tk.END, line)
+            self.oc_ids.append(ocid)
+        if hasattr(self, "oc_detail") and not self.oc_ids:
+            self.oc_detail.delete("1.0", tk.END)
+
+    def on_select_orden_compra(self, _event=None):
+        idx = self.oc_list.curselection()
+        if not idx:
+            return
+        i = idx[0]
+        if i >= len(self.oc_ids):
+            return
+        ocid = self.oc_ids[i]
+        self.oc_selected = ocid
+        row = get_orden_compra(ocid)
+        if not row:
+            return
+        (
+            _id,
+            numero,
+            fecha,
+            solicitante,
+            cedula,
+            telefono,
+            email,
+            cargo,
+            proveedor,
+            nit,
+            proveedor_tel,
+            contacto,
+            direccion,
+            condiciones_entrega,
+            condiciones_comerciales,
+            revisado_por,
+            subtotal,
+            total,
+            created_by,
+            created_at,
+        ) = row
+        items = list_orden_compra_items(ocid)
+        item_lines = [
+            f"- {cantidad:.2f} | {descripcion} | {valor_unitario:.2f} | {valor_total:.2f}"
+            for _iid, cantidad, descripcion, valor_unitario, valor_total in items
+        ]
+        lines = [
+            f"Orden de compra: {numero}",
+            f"Fecha: {fecha}",
+            "",
+            f"Solicitado por: {solicitante}",
+            f"Cédula: {cedula or '-'}",
+            f"Teléfono: {telefono or '-'}",
+            f"Correo: {email or '-'}",
+            f"Cargo: {cargo or '-'}",
+            "",
+            "Condiciones de entrega:",
+            condiciones_entrega or "-",
+            "",
+            "Condiciones comerciales:",
+            condiciones_comerciales or "-",
+            "",
+            "Items:",
+            *(item_lines or ["-"]),
+            "",
+            f"Subtotal: {float(subtotal):.2f}",
+            f"Total: {float(total):.2f}",
+            f"Revisado / aprobado por: {revisado_por or '-'}",
+            f"Creado por: {created_by or '-'}",
+            f"Fecha registro: {created_at or '-'}",
+        ]
+        self.oc_detail.delete("1.0", tk.END)
+        self.oc_detail.insert(tk.END, "\n".join(lines))
+
+    def on_pdf_orden_compra(self):
+        try:
+            ocid = self._selected_orden_compra_id()
+            if not ocid:
+                raise ValueError("Selecciona una orden de compra.")
+            path = filedialog.asksaveasfilename(
+                title="Guardar orden de compra PDF",
+                defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf")],
+                initialfile=f"{get_orden_compra(ocid)[1]}.pdf",
+            )
+            if not path:
+                return
+            export_orden_compra_pdf(ocid, path)
+            messagebox.showinfo("OK", "PDF generado.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def _selected_orden_compra_id(self):
+        if hasattr(self, "oc_list"):
+            idx = self.oc_list.curselection()
+            if idx:
+                i = idx[0]
+                if i < len(getattr(self, "oc_ids", [])):
+                    return self.oc_ids[i]
+        return getattr(self, "oc_selected", None)
+
+    def open_oc_history(self):
+        win = tk.Toplevel(self)
+        win.title("Historial de órdenes de compra")
+        win.geometry("1080x620")
+        win.resizable(True, True)
+
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+        ttk.Label(top, text="Buscar").pack(side="left")
+        search = ttk.Entry(top, width=40)
+        search.pack(side="left", padx=6)
+
+        body = ttk.Frame(win, padding=(10, 0, 10, 10))
+        body.pack(fill="both", expand=True)
+
+        oc_list = tk.Listbox(body, width=120, height=18)
+        oc_list.pack(fill="both", expand=True)
+
+        detail = tk.Text(body, width=120, height=14)
+        detail.pack(fill="both", expand=True, pady=(8, 0))
+
+        state = {"ids": []}
+
+        def refresh(*_args):
+            term = search.get().strip().lower()
+            rows = list_ordenes_compra()
+            oc_list.delete(0, tk.END)
+            state["ids"] = []
+            detail.delete("1.0", tk.END)
+            for ocid, numero, fecha, solicitante, cedula, _proveedor, _cond_entrega, revisado, total in rows:
+                line = f"{numero} | Fecha: {fecha} | Solicitante: {solicitante} | Total: {float(total):.2f}"
+                hay = f"{numero} {fecha} {solicitante} {cedula} {revisado} {total}".lower()
+                if term and term not in hay:
+                    continue
+                oc_list.insert(tk.END, line)
+                state["ids"].append(ocid)
+
+        def select(_event=None):
+            idx = oc_list.curselection()
+            if not idx:
+                return
+            i = idx[0]
+            if i >= len(state["ids"]):
+                return
+            self.oc_selected = state["ids"][i]
+            row = get_orden_compra(self.oc_selected)
+            if not row:
+                return
+            (
+                _id,
+                numero,
+                fecha,
+                solicitante,
+                cedula,
+                telefono,
+                email,
+                cargo,
+                proveedor,
+                nit,
+                proveedor_tel,
+                contacto,
+                direccion,
+                condiciones_entrega,
+                condiciones_comerciales,
+                revisado_por,
+                subtotal,
+                total,
+                created_by,
+                created_at,
+            ) = row
+            items = list_orden_compra_items(self.oc_selected)
+            lines = [
+                f"Orden de compra: {numero}",
+                f"Fecha: {fecha}",
+                f"Solicitado por: {solicitante}",
+                f"Cédula: {cedula or '-'}",
+                "",
+                "Items:",
+            ]
+            for _iid, cantidad, descripcion, valor_unitario, valor_total in items:
+                lines.append(f"- {cantidad:.2f} | {descripcion} | {valor_unitario:.2f} | {valor_total:.2f}")
+            lines.extend([
+                "",
+                f"Condiciones de entrega: {condiciones_entrega or '-'}",
+                f"Condiciones comerciales: {condiciones_comerciales or '-'}",
+                f"Revisado por: {revisado_por or '-'}",
+                f"Subtotal: {float(subtotal):.2f}",
+                f"Total: {float(total):.2f}",
+                f"Creado por: {created_by or '-'}",
+                f"Fecha registro: {created_at or '-'}",
+            ])
+            detail.delete("1.0", tk.END)
+            detail.insert(tk.END, "\n".join(lines))
+
+        def reprint_pdf():
+            idx = oc_list.curselection()
+            if not idx:
+                messagebox.showerror("Error", "Selecciona una orden de compra.", parent=win)
+                return
+            i = idx[0]
+            if i >= len(state["ids"]):
+                return
+            ocid = state["ids"][i]
+            numero = get_orden_compra(ocid)[1]
+            path = filedialog.asksaveasfilename(
+                parent=win,
+                title="Guardar orden de compra PDF",
+                defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf")],
+                initialfile=f"{numero}.pdf",
+            )
+            if not path:
+                return
+            export_orden_compra_pdf(ocid, path)
+            messagebox.showinfo("OK", "PDF generado.", parent=win)
+
+        def approve_order():
+            idx = oc_list.curselection()
+            if not idx:
+                messagebox.showerror("Error", "Selecciona una orden de compra.", parent=win)
+                return
+            i = idx[0]
+            if i >= len(state["ids"]):
+                return
+            ocid = state["ids"][i]
+            row = get_orden_compra(ocid)
+            if not row:
+                return
+            created_by = row[18]
+            current_display = self._current_user_display()
+            current_role = (self.user_info.get("role") or "").lower()
+            if current_role != "administrador":
+                messagebox.showerror("Error", "Solo un administrador puede aprobar la orden.", parent=win)
+                return
+            if (created_by or "").strip() == current_display.strip():
+                messagebox.showerror("Error", "La orden debe ser aprobada por otro administrador.", parent=win)
+                return
+            approve_orden_compra(ocid, current_display)
+            refresh()
+            try:
+                pos = state["ids"].index(ocid)
+                oc_list.selection_set(pos)
+                oc_list.see(pos)
+                select()
+            except Exception:
+                pass
+            messagebox.showinfo("OK", "Orden aprobada.", parent=win)
+
+        btns = ttk.Frame(win, padding=(10, 0, 10, 10))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Aprobar orden", command=approve_order).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Generar PDF", command=reprint_pdf).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Cerrar", command=win.destroy).pack(side="left")
+
+        search.bind("<KeyRelease>", refresh)
+        oc_list.bind("<<ListboxSelect>>", select)
+        refresh()
+
     def _refresh_dependency_warnings(self):
         if not hasattr(self, "cfg_deps"):
             return
@@ -2517,6 +3762,7 @@ class App(tk.Tk):
         nit = get_config("nit")
         direccion = get_config("direccion")
         telefono = get_config("telefono")
+        elaborado_por = self._current_user_display()
         lines = [
             header,
             f"NIT: {nit}" if nit else "",
@@ -2524,6 +3770,7 @@ class App(tk.Tk):
             f"Teléfono: {telefono}" if telefono else "",
             f"Orden: {orden}",
             f"Fecha impresión: {fecha}",
+            f"Elaborado por: {elaborado_por}",
             "",
             f"Placa: {placa}",
             f"Conductor: {conductor_label}",
@@ -2684,49 +3931,54 @@ class App(tk.Tk):
             direccion = get_config("direccion")
             telefono = get_config("telefono")
             nota_pie = get_config("nota_pie")
+            elaborado_por = self._current_user_display()
 
             half_letter = (8.5 * 72, 5.5 * 72)
             c = canvas.Canvas(path, pagesize=half_letter)
             width, height = half_letter
             margin = 36
-            y = height - margin
 
             # Subtle background and header band
             c.setFillColor(colors.whitesmoke)
             c.rect(0, 0, width, height, stroke=0, fill=1)
             c.setFillColor(colors.Color(0.92, 0.92, 0.92))
-            c.rect(0, height - 80, width, 80, stroke=0, fill=1)
+            c.rect(0, height - 92, width, 92, stroke=0, fill=1)
             c.setFillColor(colors.black)
 
             # Header area
+            logo_w = 76
+            qr_w = 70
+            gap = 12
+            center_x = margin + logo_w + gap
+            center_w = width - (2 * margin) - logo_w - qr_w - (2 * gap)
             if logo_path and os.path.exists(logo_path):
                 try:
                     c.drawImage(
                         logo_path,
                         margin,
-                        height - margin - 50,
-                        width=90,
-                        height=50,
+                        height - margin - 48,
+                        width=logo_w,
+                        height=48,
                         preserveAspectRatio=True,
                         mask="auto",
                     )
                 except Exception:
                     pass
-            c.setFont("Helvetica-Bold", 16)
-            c.drawCentredString(width / 2, height - margin - 10, header)
 
-            # Company info (top-right block)
-            c.setFont("Helvetica", 9)
-            info_x = width - margin - 220
-            info_y = height - margin - 10
+            c.setFont("Helvetica-Bold", 16)
+            c.drawCentredString(center_x + (center_w / 2), height - margin - 10, header)
+
+            # Company info centered below title, still clear of QR and logo
+            c.setFont("Helvetica", 8.5)
+            info_y = height - margin - 28
             info_lines = [
                 f"NIT: {nit}" if nit else "",
                 f"Dirección: {direccion}" if direccion else "",
                 f"Teléfono: {telefono}" if telefono else "",
             ]
             for line in [l for l in info_lines if l]:
-                c.drawString(info_x, info_y, line)
-                info_y -= 12
+                c.drawCentredString(center_x + (center_w / 2), info_y, line)
+                info_y -= 11
 
             c.setFont("Helvetica", 11)
             fecha = datetime.today().strftime("%Y-%m-%d %H:%M")
@@ -2740,18 +3992,25 @@ class App(tk.Tk):
                 qr_path = f.name
                 qr_img.save(qr_path)
 
-            # QR (top-right corner, below info)
-            qr_y = height - margin - 90
+            # QR in top-right corner without colliding with header text
+            qr_y = height - margin - 66
             try:
-                c.drawImage(qr_path, width - margin - 90, qr_y, width=80, height=80, mask="auto")
+                c.drawImage(
+                    qr_path,
+                    width - margin - qr_w,
+                    qr_y,
+                    width=qr_w,
+                    height=qr_w,
+                    mask="auto",
+                )
             except Exception:
                 pass
 
             # Section box for content
             box_left = margin
-            box_right = width - margin - 110
-            box_top = height - margin - 90
-            box_bottom = 95
+            box_right = width - margin
+            box_top = height - margin - 104
+            box_bottom = 98
             c.setStrokeColor(colors.grey)
             c.setLineWidth(0.6)
             c.rect(box_left, box_bottom, box_right - box_left, box_top - box_bottom, stroke=1, fill=0)
@@ -2766,7 +4025,7 @@ class App(tk.Tk):
             lines = [
                 f"Orden: {orden}",
                 f"Fecha impresión: {fecha}",
-                f"Orden elaborada por sistema: {APP_NAME}",
+                f"Elaborado por: {elaborado_por}",
                 "",
                 f"Placa: {placa}",
                 f"Conductor: {conductor_label}",
@@ -2780,15 +4039,19 @@ class App(tk.Tk):
                 f"Bodega origen: {bodega_origen or '-'}",
                 f"Bodega destino: {bodega_destino or '-'}",
             ]
-            c.setFont("Helvetica", 10)
+            c.setFont("Helvetica", 9)
             text_x = box_left + 6
-            text_y = y
+            text_y = box_top - 26
             for line in [l for l in lines if l != ""]:
                 c.drawString(text_x, text_y, line)
-                text_y -= 13
+                text_y -= 10.2
+
+            # Footer note outside detail box
+            c.setFont("Helvetica-Oblique", 8)
+            c.drawCentredString(width / 2, 18, f"Orden elaborada por sistema: {APP_NAME}")
 
             # Signature area (bottom, two columns)
-            sig_y = 60
+            sig_y = 58
             c.line(margin, sig_y, width / 2 - 20, sig_y)
             c.line(width / 2 + 20, sig_y, width - margin, sig_y)
             c.setFont("Helvetica", 10)
@@ -2797,7 +4060,7 @@ class App(tk.Tk):
 
             if nota_pie:
                 c.setFont("Helvetica-Oblique", 8)
-                c.drawCentredString(width / 2, 20, nota_pie)
+                c.drawCentredString(width / 2, 30, nota_pie)
 
             c.save()
             try:
